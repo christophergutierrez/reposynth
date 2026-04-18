@@ -1,0 +1,804 @@
+# Go pattern catalog for reposynth booster generation
+#
+# Each entry produces `n` training variations using the `reference` as a
+# few-shot example. The LLM generates diverse (user_request, code_response)
+# pairs that apply the same pattern to different scenarios.
+#
+# Fields:
+#   name:        Unique identifier (used in _source metadata)
+#   description: What this pattern demonstrates (injected into prompt)
+#   reference:   Real production code snippet — the model mirrors this pattern
+#   n:           Number of training variations to generate
+#   tags:        Optional list of convention tags (used by health check)
+#
+# To add a new pattern: append an entry and re-run: reposynth generate --only booster
+
+- name: sqlx_named_query_template_single_row
+  description: "SQL template execution followed by NamedQueryContext, context timeout, sql.ErrNoRows check, StructScan for single-row result, valog struct field with conditional debug enrichment"
+  n: 8
+  tags: [sqlx, valog, context_timeout, sql_template, error_wrapping]
+  reference: |
+    func (r *audienceExportRepository) GetSegmentVersion(ctx context.Context, params GetSegmentVersionParams) (results GetSegmentVersionResult, err error) {
+    	var b bytes.Buffer
+
+    	err = r.template.ExecuteTemplate(&b, "get_segment_version", params)
+    	if err != nil {
+    		return results, fmt.Errorf(`[ExecuteTemplate]: %w`, err)
+    	}
+
+    	stmt := b.String()
+
+    	l := r.logger
+    	if va_grpc.IsDebugEnabled(ctx) {
+    		l = &valog.Logger{
+    			Logger: l.With(
+    				zap.String("statement", stmt),
+    			),
+    		}
+    	}
+    	l.Info("GetSegmentVersion sql statement",
+    		zap.Any("params", params),
+    		zap.String("template_name", "get_segment_version"),
+    	)
+
+    	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+    	defer cancel()
+
+    	var (
+    		res  GetSegmentVersionResult
+    		rows *sqlx.Rows
+    	)
+    	if rows, err = r.db.NamedQueryContext(ctx, stmt, params); err != nil {
+    		if err == sql.ErrNoRows {
+    			return results, nil
+    		}
+    		return results, fmt.Errorf(`[NamedQueryContext]: %w`, err)
+    	}
+
+    	if rows == nil {
+    		return results, fmt.Errorf(`[NamedQueryContext]: nil rows returned`)
+    	}
+
+    	if !rows.Next() {
+    		return results, nil
+    	}
+
+    	if err = rows.StructScan(&res); err != nil {
+    		return results, fmt.Errorf(`[StructScan]: %w`, err)
+    	}
+
+    	if rows.Next() {
+    		return results, fmt.Errorf(`[InternalError]: Multiple results found for this Entity`)
+    	}
+
+    	return res, nil
+    }
+
+- name: sqlx_named_query_template_delete_returning
+  description: "SQL template with switch-based template name selection, NamedQueryContext for a DELETE RETURNING query, context timeout, NotFoundError custom type, StructScan for the returned row"
+  n: 8
+  tags: [sqlx, valog, context_timeout, sql_template, error_wrapping, custom_error_type]
+  reference: |
+    func (r *audienceExportRepository) DeleteExport(ctx context.Context, params DeleteExportParams) (results DeleteExportResult, err error) {
+    	var (
+    		b            bytes.Buffer
+    		templateName string
+    	)
+
+    	switch params.SegmentType {
+    	case "COMPOSITE":
+    		templateName = "delete_audience_export"
+    	default:
+    		templateName = "delete_segment_version_export"
+    	}
+
+    	err = r.template.ExecuteTemplate(&b, templateName, params)
+    	if err != nil {
+    		return DeleteExportResult{}, fmt.Errorf("[ExecuteTemplate]: %w", err)
+    	}
+
+    	stmt := b.String()
+
+    	l := r.logger
+    	if va_grpc.IsDebugEnabled(ctx) {
+    		l = &valog.Logger{
+    			Logger: l.With(
+    				zap.String("statement", stmt),
+    			),
+    		}
+    	}
+    	l.Info("DeleteExport sql statement",
+    		zap.Any("params", params),
+    		zap.String("template_name", templateName),
+    	)
+
+    	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+    	defer cancel()
+
+    	var rows *sqlx.Rows
+
+    	if rows, err = r.db.NamedQueryContext(ctx, stmt, params); err != nil {
+    		if err == sql.ErrNoRows {
+    			return results, &NotFoundError{EntityType: "Export"}
+    		}
+
+    		return results, fmt.Errorf("[NamedQueryContext]: %w", err)
+    	}
+    	defer rows.Close()
+
+    	if rows == nil || !rows.Next() {
+    		return results, fmt.Errorf(`nil rows returned`)
+    	}
+
+    	var res DeleteExportResult
+    	if err := rows.StructScan(&res); err != nil {
+    		return results, fmt.Errorf("[StructScan]: %w", err)
+    	}
+
+    	return res, nil
+    }
+
+- name: sqlx_named_query_row_iteration
+  description: "SQL template execution, NamedQueryContext, rows.Next() iteration loop, StructScan each row into a slice, rows.Err() check after loop, valog struct field logger"
+  n: 8
+  tags: [sqlx, valog, row_iteration, sql_template, error_wrapping]
+  reference: |
+    func (r *taxonomyRepository) ListTaxonomies(ctx context.Context, params ListTaxonomiesParams) (ListTaxonomiesResults, error) {
+    	var buf bytes.Buffer
+    	err := r.template.ExecuteTemplate(&buf, "list_taxonomies", params)
+    	if err != nil {
+    		r.logger.Error("Failed to execute list_taxonomies template", zap.Error(err))
+    		return ListTaxonomiesResults{}, fmt.Errorf("[ExecuteTemplate] failed to execute list_taxonomies template: %w", err)
+    	}
+    	query := buf.String()
+    	r.logger.Info("Executing list_taxonomies query", zap.String("sql", query), zap.Any("params", params))
+
+    	rows, err := r.db.NamedQueryContext(ctx, query, params)
+    	if err != nil {
+    		r.logger.Error("Failed to execute list_taxonomies query", zap.Error(err))
+    		return ListTaxonomiesResults{}, fmt.Errorf("[NamedQueryContext] failed to execute list_taxonomies query: %w", err)
+    	}
+    	defer rows.Close()
+
+    	var items []TaxonomyRow
+    	var totalCount int64
+
+    	for rows.Next() {
+    		var row TaxonomyRow
+    		if err := rows.StructScan(&row); err != nil {
+    			r.logger.Error("Failed to scan taxonomy row", zap.Error(err))
+    			return ListTaxonomiesResults{}, fmt.Errorf("[StructScan] failed to scan taxonomy row: %w", err)
+    		}
+    		if len(items) == 0 {
+    			totalCount = row.TotalCount
+    		}
+    		items = append(items, row)
+    	}
+
+    	if err := rows.Err(); err != nil {
+    		r.logger.Error("Error iterating over taxonomy rows", zap.Error(err))
+    		return ListTaxonomiesResults{}, fmt.Errorf("[RowsErr] failed to iterate over taxonomy rows: %w", err)
+    	}
+
+    	return ListTaxonomiesResults{Taxonomies: items, TotalCount: totalCount}, nil
+    }
+
+- name: sqlx_in_rebind_select_context
+  description: "sqlx.In to expand a slice into an IN clause, db.Rebind to rewrite ? placeholders for Postgres, SelectContext to scan multiple rows into a slice"
+  n: 8
+  tags: [sqlx, valog, batch_operation, sqlx_in, error_wrapping]
+  reference: |
+    func (r *reportConfigurationRepository) BatchDeleteReport(ctx context.Context, reportIds []int64) ([]int64, error) {
+    	if len(reportIds) == 0 {
+    		return nil, fmt.Errorf("[BatchDeleteReport] no report IDs provided")
+    	}
+
+    	r.logger.Info("Start batch deleting reports", zap.Int64s("report_ids", reportIds))
+
+    	query, args, err := sqlx.In(scheduleUpdateQuery, reportIds)
+    	if err != nil {
+    		return nil, fmt.Errorf("[sqlx.In] failed to construct batch delete query: %w", err)
+    	}
+    	query = r.postgresDB.Rebind(query)
+
+    	var updatedIDs []int64
+    	err = r.postgresDB.SelectContext(ctx, &updatedIDs, query, args...)
+    	if err != nil {
+    		return nil, fmt.Errorf("[SelectContext] failed to execute batch delete: %w", err)
+    	}
+    	r.logger.Info("Successfully batch deleted reports", zap.Int64s("deleted_ids", updatedIDs))
+    	return updatedIDs, nil
+    }
+
+- name: valog_struct_field_conditional_enrichment
+  description: "Logger stored as a struct field (r.logger *valog.Logger), conditional enrichment via &valog.Logger{Logger: l.With(zap.Field...)} for debug contexts, Info/Error/Warn calls with structured zap fields"
+  n: 6
+  tags: [valog, logging]
+  reference: |
+    // Logger is stored as a struct field — never retrieved from context.
+    // The pattern for conditional debug enrichment:
+
+    l := r.logger
+    if va_grpc.IsDebugEnabled(ctx) {
+    	l = &valog.Logger{
+    		Logger: l.With(
+    			zap.String("statement", stmt),
+    			zap.Any("params", params),
+    		),
+    	}
+    }
+    l.Info("operation name",
+    	zap.String("template_name", templateName),
+    	zap.Any("params", params),
+    )
+
+    // Struct definition:
+    type myRepository struct {
+    	db       *sqlx.DB
+    	logger   *valog.Logger
+    	template *template.Template
+    }
+
+    // Constructor:
+    func NewMyRepository(db *sqlx.DB, logger *valog.Logger, tmpl *template.Template) *myRepository {
+    	return &myRepository{db: db, logger: logger, template: tmpl}
+    }
+
+- name: http_client_with_context_request
+  description: "http.NewRequestWithContext, setting Authorization and custom headers, http.Client.Do, io.ReadAll, status code check, json.Unmarshal, fmt.Errorf wrapping at each step"
+  n: 6
+  tags: [http_client, context, error_wrapping]
+  reference: |
+    func (c userInfoClient) GetIdentity(ctx context.Context, legacyUserId int64) (resp UserIdentity, err error) {
+    	url := fmt.Sprintf("%s/auth/v2/users/identify", c.baseUrl)
+
+    	r, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    	if err != nil {
+    		return resp, fmt.Errorf("[http.NewRequest]: %w", err)
+    	}
+
+    	r.Header.Set("Content-Type", "application/json")
+    	r.Header.Set("Authorization", fmt.Sprintf("Bearer _%s", c.masterKey))
+    	r.Header.Set("x-api-key-user-id", strconv.FormatInt(legacyUserId, 10))
+
+    	c.log.Debug("[GetIdentity]: request user",
+    		zap.String("url", r.URL.String()),
+    	)
+
+    	doResp, err := c.client.Do(r)
+    	if err != nil {
+    		return resp, fmt.Errorf("[http.Client.Do]: %w", err)
+    	}
+
+    	body, err := io.ReadAll(doResp.Body)
+    	if err != nil {
+    		return resp, fmt.Errorf("[io.ReadAll]: %w", err)
+    	}
+    	doResp.Body.Close()
+
+    	if doResp.StatusCode != http.StatusOK {
+    		return resp, fmt.Errorf("[http.Client.Do]: request returned http status %d", doResp.StatusCode)
+    	}
+
+    	err = json.Unmarshal(body, &resp)
+    	if err != nil {
+    		return resp, fmt.Errorf("[json.Unmarshal]: %w", err)
+    	}
+
+    	return resp, nil
+    }
+
+- name: fmt_errorf_wrapping_convention
+  description: "Consistent fmt.Errorf wrapping at every error site with [FuncName]: prefix, never bare return err, never errors.New(err.Error())"
+  n: 6
+  tags: [error_wrapping]
+  reference: |
+    // CORRECT patterns:
+    if err := validateSpec(spec); err != nil {
+    	return fmt.Errorf("[validateSpec]: %w", err)
+    }
+    if err := s.internalClient.GetResources(spec); err != nil {
+    	return fmt.Errorf("[s.internalClient.GetResources]: %w", err)
+    }
+    if err := rows.StructScan(&res); err != nil {
+    	return results, fmt.Errorf("[StructScan]: %w", err)
+    }
+
+    // WRONG — never do these:
+    return errors.New(err.Error())          // breaks error chain
+    return fmt.Errorf("failed to validate: %w", err)  // no [bracket] prefix
+    return err                              // bare return, no context
+
+- name: grpc_status_not_found
+  description: "Returning gRPC status codes (codes.NotFound, codes.InvalidArgument, codes.Internal) using status.Errorf, checking for sql.ErrNoRows and mapping to codes.NotFound"
+  n: 6
+  tags: [grpc_status, error_wrapping]
+  reference: |
+    func (s *segmentService) GetSegment(ctx context.Context, req *pb.GetSegmentRequest) (*pb.GetSegmentResponse, error) {
+    	if req.GetId() == "" {
+    		return nil, status.Errorf(codes.InvalidArgument, "segment id is required")
+    	}
+
+    	seg, err := s.repo.GetSegment(ctx, repository.GetSegmentParams{Id: req.GetId()})
+    	if err != nil {
+    		if errors.Is(err, sql.ErrNoRows) {
+    			return nil, status.Errorf(codes.NotFound, "segment %q not found", req.GetId())
+    		}
+    		return nil, status.Errorf(codes.Internal, "failed to get segment: %v", err)
+    	}
+
+    	return &pb.GetSegmentResponse{Segment: seg.ToProto()}, nil
+    }
+
+- name: context_timeout_cancel
+  description: "context.WithTimeout with defer cancel(), using the derived ctx for all downstream calls, proper placement before DB or HTTP calls"
+  n: 6
+  tags: [context_timeout]
+  reference: |
+    // Correct pattern — create timeout ctx just before the I/O call:
+    ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+    defer cancel()
+
+    rows, err := r.db.NamedQueryContext(ctx, stmt, params)
+
+    // For HTTP:
+    ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+
+- name: retry_logic_http_backoff
+  description: "HTTP retry loop with exponential backoff (3 attempts), context.Done() check during sleep, retry only on 5xx, non-retryable errors returned immediately, fmt.Errorf wrapping, lastErr tracking"
+  n: 8
+  tags: [http_client, retry_logic, context, error_wrapping]
+  reference: |
+    func (c *graphClient) GetAccessGraph(ctx context.Context, tenantID string) (*AccessGraph, error) {
+    	url := fmt.Sprintf("%s/tenants/%s/access-graph", c.baseURL, tenantID)
+
+    	var lastErr error
+    	for attempt := 0; attempt < 3; attempt++ {
+    		if attempt > 0 {
+    			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+    			select {
+    			case <-time.After(backoff):
+    			case <-ctx.Done():
+    				return nil, fmt.Errorf("[GetAccessGraph]: context canceled: %w", ctx.Err())
+    			}
+    		}
+
+    		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    		if err != nil {
+    			return nil, fmt.Errorf("[http.NewRequestWithContext]: %w", err)
+    		}
+    		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+
+    		resp, err := c.client.Do(req)
+    		if err != nil {
+    			lastErr = fmt.Errorf("[http.Client.Do]: %w", err)
+    			continue
+    		}
+
+    		body, err := io.ReadAll(resp.Body)
+    		resp.Body.Close()
+    		if err != nil {
+    			return nil, fmt.Errorf("[io.ReadAll]: %w", err)
+    		}
+
+    		if resp.StatusCode >= 500 {
+    			lastErr = fmt.Errorf("[http.Client.Do]: server error %d", resp.StatusCode)
+    			continue
+    		}
+    		if resp.StatusCode != http.StatusOK {
+    			return nil, fmt.Errorf("[http.Client.Do]: request returned http status %d", resp.StatusCode)
+    		}
+
+    		var result AccessGraph
+    		if err := json.Unmarshal(body, &result); err != nil {
+    			return nil, fmt.Errorf("[json.Unmarshal]: %w", err)
+    		}
+    		return &result, nil
+    	}
+    	return nil, fmt.Errorf("[GetAccessGraph]: max retries exceeded: %w", lastErr)
+    }
+
+- name: event_routing_switch
+  description: "Single workflow processor method that receives an event and routes it to typed handler methods via switch statement; valog struct field logger; fmt.Errorf wrapping at each handler call; default case logs and returns nil"
+  n: 8
+  tags: [event_routing, valog, error_wrapping]
+  reference: |
+    func (w *auth0EventWorker) ProcessAuth0Events(ctx context.Context, event auth0.WebhookEvent) error {
+    	w.logger.Info("processing auth0 event",
+    		zap.String("event_type", event.Type),
+    		zap.String("user_id", event.Data.UserID),
+    	)
+
+    	switch event.Type {
+    	case "post-login":
+    		if err := w.handlePostLogin(ctx, event.Data); err != nil {
+    			return fmt.Errorf("[handlePostLogin]: %w", err)
+    		}
+    	case "post-change-password":
+    		if err := w.handlePostChangePassword(ctx, event.Data); err != nil {
+    			return fmt.Errorf("[handlePostChangePassword]: %w", err)
+    		}
+    	case "send-phone-message":
+    		if err := w.handleSendPhoneMessage(ctx, event.Data); err != nil {
+    			return fmt.Errorf("[handleSendPhoneMessage]: %w", err)
+    		}
+    	default:
+    		w.logger.Warn("unhandled event type, skipping",
+    			zap.String("event_type", event.Type),
+    		)
+    	}
+    	return nil
+    }
+
+- name: pagination_defaults_proto_to_params
+  description: "Convert a proto request to a params struct, applying default values for page size (100) and page number (1) when the proto fields are zero, using req.GetXxx() accessor pattern"
+  n: 8
+  tags: [proto_conversion, pagination_defaults]
+  reference: |
+    func ToRequestParams(req *pb.ListSegmentsRequest) ListSegmentsParams {
+    	pageSize := req.GetPageSize()
+    	if pageSize == 0 {
+    		pageSize = 100
+    	}
+    	page := req.GetPage()
+    	if page == 0 {
+    		page = 1
+    	}
+    	return ListSegmentsParams{
+    		Page:       page,
+    		PageSize:   pageSize,
+    		OrgID:      req.GetOrgId(),
+    		NameFilter: req.GetNameFilter(),
+    		Status:     req.GetStatus().String(),
+    	}
+    }
+
+- name: parameter_conversion_proto_to_struct
+  description: "Pure conversion function from proto request to internal params struct; uses req.GetXxx() accessors; no validation, no errors — just a flat field mapping; function name is ToXxxParams or ToCreateParams"
+  n: 8
+  tags: [proto_conversion]
+  reference: |
+    func ToCreateParams(req *pb.CreateExportRequest) CreateExportParams {
+    	return CreateExportParams{
+    		SegmentID:      req.GetSegmentId(),
+    		SegmentVersion: req.GetSegmentVersion(),
+    		ExportType:     req.GetExportType().String(),
+    		DestinationID:  req.GetDestinationId(),
+    		OrgID:          req.GetOrgId(),
+    		RequestedBy:    req.GetRequestedBy(),
+    	}
+    }
+
+- name: aws_sdk_v1_sts_assume_role
+  description: "AWS SDK v1 (github.com/aws/aws-sdk-go — NOT v2) STS AssumeRole: AssumeRoleWithContext, aws.String/aws.StringValue helpers, structured Credentials return, fmt.Errorf wrapping"
+  n: 8
+  tags: [aws_sdk, context, error_wrapping]
+  reference: |
+    func (c *stsClient) CreateSessionForArn(ctx context.Context, roleArn, sessionName string) (*Credentials, error) {
+    	input := &sts.AssumeRoleInput{
+    		RoleArn:         aws.String(roleArn),
+    		RoleSessionName: aws.String(sessionName),
+    	}
+
+    	result, err := c.stsClient.AssumeRoleWithContext(ctx, input)
+    	if err != nil {
+    		return nil, fmt.Errorf("[sts.AssumeRole]: %w", err)
+    	}
+
+    	creds := result.Credentials
+    	return &Credentials{
+    		AccessKeyID:     aws.StringValue(creds.AccessKeyId),
+    		SecretAccessKey: aws.StringValue(creds.SecretAccessKey),
+    		SessionToken:    aws.StringValue(creds.SessionToken),
+    		Expiration:      aws.TimeValue(creds.Expiration),
+    	}, nil
+    }
+
+    // Note: import path is github.com/aws/aws-sdk-go/service/sts — NOT aws-sdk-go-v2
+
+- name: json_unmarshal_http_response
+  description: "HTTP GET with context, io.ReadAll on response body, json.Unmarshal into a typed struct, status code check before unmarshal, fmt.Errorf wrapping at every error site, defer resp.Body.Close()"
+  n: 10
+  tags: [http_client, json_unmarshal, error_wrapping]
+  reference: |
+    func (c *managementClient) IsValidInventory(ctx context.Context, inventoryID string) (bool, error) {
+    	url := fmt.Sprintf("%s/inventory/%s/validate", c.baseURL, inventoryID)
+
+    	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    	if err != nil {
+    		return false, fmt.Errorf("[http.NewRequestWithContext]: %w", err)
+    	}
+    	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+
+    	resp, err := c.httpClient.Do(req)
+    	if err != nil {
+    		return false, fmt.Errorf("[http.Client.Do]: %w", err)
+    	}
+    	defer resp.Body.Close()
+
+    	body, err := io.ReadAll(resp.Body)
+    	if err != nil {
+    		return false, fmt.Errorf("[io.ReadAll]: %w", err)
+    	}
+
+    	if resp.StatusCode != http.StatusOK {
+    		return false, fmt.Errorf("[http.Client.Do]: unexpected status %d: %s", resp.StatusCode, string(body))
+    	}
+
+    	var result struct {
+    		Valid   bool   `json:"valid"`
+    		Reason  string `json:"reason"`
+    	}
+    	if err := json.Unmarshal(body, &result); err != nil {
+    		return false, fmt.Errorf("[json.Unmarshal]: %w", err)
+    	}
+    	return result.Valid, nil
+    }
+
+- name: json_unmarshal_list_response
+  description: "HTTP GET returning a JSON array response, io.ReadAll, json.Unmarshal into a slice of structs, pagination or filter params encoded as query params, fmt.Errorf wrapping"
+  n: 8
+  tags: [http_client, json_unmarshal, error_wrapping]
+  reference: |
+    func (c *audienceClient) GetAudienceMetadata(ctx context.Context, segmentIDs []string) ([]AudienceMetadata, error) {
+    	if len(segmentIDs) == 0 {
+    		return nil, nil
+    	}
+
+    	u, err := url.Parse(fmt.Sprintf("%s/audiences/metadata", c.baseURL))
+    	if err != nil {
+    		return nil, fmt.Errorf("[url.Parse]: %w", err)
+    	}
+    	q := u.Query()
+    	for _, id := range segmentIDs {
+    		q.Add("segment_id", id)
+    	}
+    	u.RawQuery = q.Encode()
+
+    	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+    	if err != nil {
+    		return nil, fmt.Errorf("[http.NewRequestWithContext]: %w", err)
+    	}
+
+    	resp, err := c.client.Do(req)
+    	if err != nil {
+    		return nil, fmt.Errorf("[http.Client.Do]: %w", err)
+    	}
+    	defer resp.Body.Close()
+
+    	body, err := io.ReadAll(resp.Body)
+    	if err != nil {
+    		return nil, fmt.Errorf("[io.ReadAll]: %w", err)
+    	}
+
+    	if resp.StatusCode != http.StatusOK {
+    		return nil, fmt.Errorf("[http.Client.Do]: status %d", resp.StatusCode)
+    	}
+
+    	var result []AudienceMetadata
+    	if err := json.Unmarshal(body, &result); err != nil {
+    		return nil, fmt.Errorf("[json.Unmarshal]: %w", err)
+    	}
+    	return result, nil
+    }
+
+- name: proto_conversion_domain_to_proto
+  description: "Pure conversion function from internal domain struct to proto message; field-by-field mapping using .String() for enum values, timestamppb.New() for time.Time fields, no error return"
+  n: 10
+  tags: [proto_conversion]
+  reference: |
+    func (s *Segment) ToProto() *pb.Segment {
+    	return &pb.Segment{
+    		Id:          s.ID,
+    		Name:        s.Name,
+    		OrgId:       s.OrgID,
+    		Status:      pb.SegmentStatus(pb.SegmentStatus_value[s.Status]),
+    		Description: s.Description,
+    		CreatedAt:   timestamppb.New(s.CreatedAt),
+    		UpdatedAt:   timestamppb.New(s.UpdatedAt),
+    	}
+    }
+
+    func ToSegmentListResponse(segments []Segment, totalCount int64) *pb.ListSegmentsResponse {
+    	pbSegments := make([]*pb.Segment, 0, len(segments))
+    	for _, s := range segments {
+    		pbSegments = append(pbSegments, s.ToProto())
+    	}
+    	return &pb.ListSegmentsResponse{
+    		Segments:   pbSegments,
+    		TotalCount: totalCount,
+    	}
+    }
+
+- name: proto_conversion_proto_to_domain
+  description: "Pure conversion function from proto request to internal domain/params struct; uses req.GetXxx() accessors; converts repeated proto fields to Go slices; handles optional/nullable proto fields with GetXxx() zero-value defaults"
+  n: 10
+  tags: [proto_conversion]
+  reference: |
+    func ToCreateParams(req *pb.CreateExportRequest) CreateExportParams {
+    	return CreateExportParams{
+    		SegmentID:      req.GetSegmentId(),
+    		SegmentVersion: req.GetSegmentVersion(),
+    		ExportType:     req.GetExportType().String(),
+    		DestinationID:  req.GetDestinationId(),
+    		OrgID:          req.GetOrgId(),
+    		RequestedBy:    req.GetRequestedBy(),
+    	}
+    }
+
+    func ToListParams(req *pb.ListExportsRequest) ListExportsParams {
+    	pageSize := req.GetPageSize()
+    	if pageSize == 0 {
+    		pageSize = 100
+    	}
+    	page := req.GetPage()
+    	if page == 0 {
+    		page = 1
+    	}
+    	var segmentIDs []string
+    	for _, id := range req.GetSegmentIds() {
+    		segmentIDs = append(segmentIDs, id)
+    	}
+    	return ListExportsParams{
+    		Page:       page,
+    		PageSize:   pageSize,
+    		SegmentIDs: segmentIDs,
+    		OrgID:      req.GetOrgId(),
+    	}
+    }
+
+- name: grpc_status_validation_and_errors
+  description: "gRPC service method with multi-field input validation returning codes.InvalidArgument, repository call mapped to codes.NotFound via errors.Is(err, sql.ErrNoRows), internal errors returning codes.Internal, success returning proto response"
+  n: 10
+  tags: [grpc_status, error_wrapping, proto_conversion]
+  reference: |
+    func (s *exportService) CreateExport(ctx context.Context, req *pb.CreateExportRequest) (*pb.CreateExportResponse, error) {
+    	if req.GetSegmentId() == "" {
+    		return nil, status.Errorf(codes.InvalidArgument, "segment_id is required")
+    	}
+    	if req.GetOrgId() == "" {
+    		return nil, status.Errorf(codes.InvalidArgument, "org_id is required")
+    	}
+    	if req.GetExportType() == pb.ExportType_EXPORT_TYPE_UNSPECIFIED {
+    		return nil, status.Errorf(codes.InvalidArgument, "export_type is required")
+    	}
+
+    	export, err := s.repo.CreateExport(ctx, ToCreateParams(req))
+    	if err != nil {
+    		if errors.Is(err, sql.ErrNoRows) {
+    			return nil, status.Errorf(codes.NotFound, "segment %q not found", req.GetSegmentId())
+    		}
+    		return nil, status.Errorf(codes.Internal, "failed to create export: %v", err)
+    	}
+
+    	return &pb.CreateExportResponse{Export: export.ToProto()}, nil
+    }
+
+- name: grpc_status_get_with_not_found
+  description: "gRPC Get method: validate required ID field, call repository, map sql.ErrNoRows to codes.NotFound with descriptive message, map other errors to codes.Internal, return proto response on success"
+  n: 8
+  tags: [grpc_status, error_wrapping]
+  reference: |
+    func (s *forecastService) GetForecastedReachCurves(ctx context.Context, req *pb.GetForecastedReachCurvesRequest) (*pb.GetForecastedReachCurvesResponse, error) {
+    	if req.GetCampaignId() == "" {
+    		return nil, status.Errorf(codes.InvalidArgument, "campaign_id is required")
+    	}
+
+    	curves, err := s.repo.GetReachCurves(ctx, repository.GetReachCurvesParams{
+    		CampaignID: req.GetCampaignId(),
+    		OrgID:      req.GetOrgId(),
+    	})
+    	if err != nil {
+    		if errors.Is(err, sql.ErrNoRows) {
+    			return nil, status.Errorf(codes.NotFound, "reach curves for campaign %q not found", req.GetCampaignId())
+    		}
+    		return nil, status.Errorf(codes.Internal, "failed to get reach curves: %v", err)
+    	}
+
+    	pbCurves := make([]*pb.ReachCurve, 0, len(curves))
+    	for _, c := range curves {
+    		pbCurves = append(pbCurves, c.ToProto())
+    	}
+    	return &pb.GetForecastedReachCurvesResponse{Curves: pbCurves}, nil
+    }
+
+- name: retry_logic_with_context_deadline
+  description: "HTTP retry loop: up to 3 attempts, exponential backoff using select with context.Done() to respect cancellation, retry only 5xx responses, non-retryable errors (4xx, parse errors) return immediately, lastErr pattern, fmt.Errorf wrapping"
+  n: 10
+  tags: [http_client, retry_logic, context, error_wrapping]
+  reference: |
+    func (c *graphClient) GetAccessGraph(ctx context.Context, tenantID string) (*AccessGraph, error) {
+    	url := fmt.Sprintf("%s/tenants/%s/access-graph", c.baseURL, tenantID)
+
+    	var lastErr error
+    	for attempt := 0; attempt < 3; attempt++ {
+    		if attempt > 0 {
+    			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+    			select {
+    			case <-time.After(backoff):
+    			case <-ctx.Done():
+    				return nil, fmt.Errorf("[GetAccessGraph]: context canceled: %w", ctx.Err())
+    			}
+    		}
+
+    		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    		if err != nil {
+    			return nil, fmt.Errorf("[http.NewRequestWithContext]: %w", err)
+    		}
+    		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+
+    		resp, err := c.client.Do(req)
+    		if err != nil {
+    			lastErr = fmt.Errorf("[http.Client.Do]: %w", err)
+    			continue
+    		}
+    		body, err := io.ReadAll(resp.Body)
+    		resp.Body.Close()
+    		if err != nil {
+    			return nil, fmt.Errorf("[io.ReadAll]: %w", err)
+    		}
+    		if resp.StatusCode >= 500 {
+    			lastErr = fmt.Errorf("[http.Client.Do]: server error %d", resp.StatusCode)
+    			continue
+    		}
+    		if resp.StatusCode != http.StatusOK {
+    			return nil, fmt.Errorf("[http.Client.Do]: status %d", resp.StatusCode)
+    		}
+    		var result AccessGraph
+    		if err := json.Unmarshal(body, &result); err != nil {
+    			return nil, fmt.Errorf("[json.Unmarshal]: %w", err)
+    		}
+    		return &result, nil
+    	}
+    	return nil, fmt.Errorf("[GetAccessGraph]: max retries exceeded: %w", lastErr)
+    }
+
+- name: retry_logic_post_with_body
+  description: "HTTP POST retry loop with JSON request body (json.Marshal + bytes.NewReader), exponential backoff with context.Done() check, retry on 5xx, 429 too-many-requests, lastErr tracking, fmt.Errorf wrapping"
+  n: 8
+  tags: [http_client, retry_logic, context, error_wrapping]
+  reference: |
+    func (c *notificationClient) SendNotification(ctx context.Context, req NotificationRequest) error {
+    	body, err := json.Marshal(req)
+    	if err != nil {
+    		return fmt.Errorf("[json.Marshal]: %w", err)
+    	}
+
+    	var lastErr error
+    	for attempt := 0; attempt < 3; attempt++ {
+    		if attempt > 0 {
+    			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+    			select {
+    			case <-time.After(backoff):
+    			case <-ctx.Done():
+    				return fmt.Errorf("[SendNotification]: context canceled: %w", ctx.Err())
+    			}
+    		}
+
+    		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+    		if err != nil {
+    			return fmt.Errorf("[http.NewRequestWithContext]: %w", err)
+    		}
+    		httpReq.Header.Set("Content-Type", "application/json")
+    		httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+
+    		resp, err := c.client.Do(httpReq)
+    		if err != nil {
+    			lastErr = fmt.Errorf("[http.Client.Do]: %w", err)
+    			continue
+    		}
+    		resp.Body.Close()
+
+    		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+    			lastErr = fmt.Errorf("[http.Client.Do]: status %d", resp.StatusCode)
+    			continue
+    		}
+    		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+    			return fmt.Errorf("[http.Client.Do]: unexpected status %d", resp.StatusCode)
+    		}
+    		return nil
+    	}
+    	return fmt.Errorf("[SendNotification]: max retries exceeded: %w", lastErr)
+    }

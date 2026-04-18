@@ -1,0 +1,20 @@
+[package]
+name = "reposynth"
+version = "0.1.0"
+edition = "2021"
+description = "Generate synthetic LLM fine-tuning data from any repo's conventions"
+license = "MIT"
+
+[[bin]]
+name = "reposynth"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = { version = "1", features = ["preserve_order"] }
+walkdir = "2"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
