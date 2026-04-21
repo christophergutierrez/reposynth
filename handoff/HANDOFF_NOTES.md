@@ -29,9 +29,33 @@ When placing files in the training machine's `data/` directory, use these names:
 | `data/holdout/holdout_v4.jsonl` | run separately if desired (harder set, not comparable to v2) |
 | `evals/cycle8_manifest.yaml` | `data/manifest.yaml` |
 
-### Cycle 9 holdout additions
+### Cycle 9 files
 
-`holdout_v5.jsonl` — 8 new records targeting weak/uncovered conventions from cycle 8 synth_status:
+**Two training options** — send the clean-only file as the primary experiment:
+
+| reposynth file | trainLLM name | records | notes |
+|---|---|---|---|
+| `data/training/combined_20260421_v5_clean.jsonl` | `data/training.jsonl` | **1,204** | **PRIMARY** — cycle 8 only + 56 contrast |
+| `data/training/combined_20260421_v5.jsonl` | `data/training.jsonl` | 3,958 | Fallback — full history + 56 contrast |
+| `data/holdout/holdout_v2.jsonl` + `holdout_v5.jsonl` (concatenated) | `data/holdout.jsonl` | 28 | Primary eval set |
+| `evals/cycle9_manifest.yaml` | `data/manifest.yaml` | — | |
+
+**Clean-only experiment**: the cycle 8 feedback hypothesized that ~1600 legacy (cycles 1–6) records with subtly wrong patterns are competing with the correct current data. The clean-only file tests this by training on cycle 8 records only (1148) plus 56 contrast records. Cycle 7's 295 records could not be isolated — `_source` was stripped during processing, so there is no cycle-level provenance in the processed files.
+
+**Contrast records** (56 total) — new this cycle. These are `(wrong standard Go code → corrected VA code)` pairs seeded from actual eval failures. The model wrote the wrong examples in prior runs, so they are realistic:
+
+| pattern | n | wrong idiom |
+|---|---|---|
+| `http_client_bearer_underscore` | 7 | `Bearer %s` instead of `Bearer _%s` |
+| `retry_logic_sleep_not_select` | 6 | `select { case <-time.After }` instead of `time.Sleep` |
+| `pagination_paging_struct_not_offset_math` | 12 | `(page-1)*pageSize` instead of `sqlfunc.Paging{Limit, Offset}` |
+| `error_wrapping_always_fmt_errorf` | 11 | bare `return err` instead of `fmt.Errorf("[X]: %w", err)` |
+| `errread_join_not_fmt_errorf` | 12 | `fmt.Errorf` at repo read layer instead of `ErrRead.Join(err)` |
+| `valog_debug_enrichment_not_plain_log` | 8 | `r.logger.Debug(stmt)` unconditionally instead of `IsDebugEnabled` conditional enrichment |
+
+Three patterns yielded fewer records than requested (bearer: 7/20, retry: 6/20, valog: 8/15). If these conventions still score poorly in cycle 9, add a second `wrong_example` variant to each entry in `central/.reposynth/patterns/contrast.yaml` and rerun.
+
+**Holdout additions** — `holdout_v5.jsonl` (8 new records targeting cycle 8 gaps):
 
 | id | function | conventions |
 |---|---|---|
@@ -44,7 +68,7 @@ When placing files in the training machine's `data/` directory, use these names:
 | holdout_v5_007 | ProtoToEntityMethodology | **proto_conversion** (bidirectional enum) |
 | holdout_v5_008 | GetIdentity | **http_client** (Bearer _key), **json_unmarshal** |
 
-For cycle 9, use holdout_v2 + holdout_v5 together as `data/holdout.jsonl` (concatenate). Do NOT mix in holdout_v4 — it is not comparable to v2 baseline. holdout_v5 adds coverage for `logging` (previously uncovered) and provides more signal on the four low-scoring conventions.
+Concatenate holdout_v2 + holdout_v5 = 28 records for cycle 9 eval. Do NOT mix in holdout_v4 — not comparable to v2 baseline.
 
 The manifest **must** be named `manifest.yaml` in `data/` — `emit_synth_status.py`
 reads `cfg.data_dir / "manifest.yaml"` explicitly. If it is absent or misnamed,
