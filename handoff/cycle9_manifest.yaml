@@ -1,0 +1,170 @@
+# Cycle 9 — data manifest
+# Pass this file to the training machine alongside the training JSONL so the
+# LLM analysis step has full context for producing synth_status.yaml and the
+# next train_params_suggestions.yaml.
+
+meta:
+  cycle: 9
+  generated_at: "2026-04-21"
+  previous_cycle_eval: "2026-04-20_1702"   # eval report ID from cycle 8 (holdout_v2 run)
+  previous_avg_score: 0.31                 # holdout_v2 (20 records) — cycle 8 regressed from 0.41
+  base_model_avg_score: 0.08
+
+# ---------------------------------------------------------------------------
+# Two training files produced this cycle — send BOTH to the training machine.
+# The clean-only experiment tests whether stripping legacy data helps.
+# ---------------------------------------------------------------------------
+training:
+  # PRIMARY: clean-only experiment (recommended for cycle 9 training)
+  clean_file: combined_20260421_v5_clean.jsonl
+  clean_total_records: 1204   # 1148 (cycle 8 booster) + 56 (contrast)
+  clean_note: >
+    Cycle 8 records only — no legacy cycles 1–6.
+    Cycle 7's 295 records cannot be separated (no _source provenance in processed files).
+    This tests the hypothesis from cycle 8 feedback: legacy records with subtly wrong
+    patterns may be pulling the adapter away from current conventions.
+
+  # SECONDARY: full history + contrast (fallback if clean-only degrades)
+  full_file: combined_20260421_v5.jsonl
+  full_total_records: 3958   # 3902 (cycles 1–8 filtered) + 56 (contrast)
+
+  # Contrast records breakdown
+  contrast_records: 56
+  contrast_patterns:
+    - name: http_client_bearer_underscore
+      n_generated: 7   # requested 20; model produced 7
+      tags: [http_client, error_wrapping]
+      wrong_idiom: "Bearer %s (no underscore)"
+      correct_idiom: "Bearer _%s (underscore mandatory)"
+    - name: retry_logic_sleep_not_select
+      n_generated: 6   # requested 20; model produced 6
+      tags: [http_client, retry_logic]
+      wrong_idiom: "select { case <-time.After(backoff): case <-ctx.Done(): }"
+      correct_idiom: "time.Sleep(backoff)"
+    - name: pagination_paging_struct_not_offset_math
+      n_generated: 12   # requested 20
+      tags: [proto_conversion, pagination_defaults]
+      wrong_idiom: "(page-1)*pageSize offset calculation, missing logger/offset params"
+      correct_idiom: "sqlfunc.Paging{Limit, Offset} with *valog.Logger and offset int32 params"
+    - name: error_wrapping_always_fmt_errorf
+      n_generated: 11   # requested 20
+      tags: [error_wrapping]
+      wrong_idiom: "bare return err at some call sites"
+      correct_idiom: "every error wrapped: fmt.Errorf(\"[CallerName]: %w\", err)"
+    - name: errread_join_not_fmt_errorf
+      n_generated: 12   # requested 15
+      tags: [error_wrapping, sqlx]
+      wrong_idiom: "fmt.Errorf wrapping at repo read layer"
+      correct_idiom: "ErrRead.Join(err) or named sentinel like ErrInsertExport.Join(err)"
+    - name: valog_debug_enrichment_not_plain_log
+      n_generated: 8   # requested 15
+      tags: [valog, logging]
+      wrong_idiom: "r.logger.Debug(stmt) unconditionally"
+      correct_idiom: "l := r.logger; if va_grpc.IsDebugEnabled(ctx) { l = &valog.Logger{Logger: l.With(...)} }; l.Info(...)"
+
+  contrast_note: >
+    Contrast records are (wrong_code_review_request → corrected_VA_code) pairs.
+    Wrong code is seeded from ACTUAL model outputs in eval runs (holdout_008, holdout_006,
+    holdout_011, holdout_014, holdout_016) — the same model that will be trained wrote
+    the wrong examples. This directly targets the root cause of plateau: model defaults
+    to pretraining idioms when VA conventions differ from standard Go.
+
+holdout:
+  # Cycle 9 expands the primary eval set with 8 new records targeting gaps from cycle 8.
+  eval_sets:
+    - holdout_v2.jsonl   # 20 records — core set; use for run-over-run comparison
+    - holdout_v5.jsonl   # 8 records — NEW this cycle; targets logging (uncovered), named_exec_context_insert, grpc_status, parameter_conversion, pagination_defaults, proto_conversion
+  combined_records: 28
+  note: >
+    Do NOT use holdout_v4 — it is not comparable to holdout_v2 (different functions,
+    SkipRetry-heavy, avg 0.24 vs 0.41 for the same cycle 7 adapter).
+    holdout_v5 was designed to cover conventions that scored POOR in cycle 8.
+
+# ---------------------------------------------------------------------------
+# Cycle 8 regression analysis
+# ---------------------------------------------------------------------------
+cycle8_regression:
+  score: 0.31   # down from 0.41 (cycle 7)
+  hypothesis: >
+    The 75-record contamination filter and heavy booster pass may have introduced
+    distribution shift. Alternatively, legacy cycles 1–6 records (~1600) with subtly
+    wrong patterns (pre-fix references) are competing with the correct cycle 7–8 records.
+    Cycle 9 tests the clean-only hypothesis directly.
+  poor_conventions_cycle8:
+    - logging           # uncovered in holdout_v2; holdout_v5_001 addresses this
+    - named_exec_context_insert   # 0 holdout records; holdout_v5_002–004 address this
+    - grpc_status       # holdout_v5_005 addresses this
+    - parameter_conversion        # holdout_v5_006 addresses this
+    - pagination_defaults         # holdout_v5_006 addresses this
+    - proto_conversion            # holdout_v5_007 addresses this
+
+# ---------------------------------------------------------------------------
+# Known gaps (forward-looking)
+# ---------------------------------------------------------------------------
+known_gaps:
+  - convention: valog_debug_enrichment
+    note: >
+      Only 8 contrast records generated for valog_debug_enrichment (requested 15).
+      Model is struggling with the IsDebugEnabled conditional logger enrichment pattern.
+      Consider adding more holdout examples and boosting n in next cycle.
+
+  - convention: http_client_bearer_underscore
+    note: >
+      Only 7 contrast records for bearer underscore (requested 20). Pattern may need
+      a more diverse set of wrong_examples in contrast.yaml to get broader coverage.
+
+  - convention: retry_logic_sleep_not_select
+    note: >
+      Only 6 contrast records for retry sleep pattern (requested 20). Same issue —
+      consider adding a second wrong_example variant to contrast.yaml.
+
+# ---------------------------------------------------------------------------
+# Codebase conventions reference (same as cycle 8)
+# ---------------------------------------------------------------------------
+codebase_conventions:
+  repo: "videoamp/central — VideoAmp Go monorepo"
+
+  error_handling:
+    - "Wrap every error: fmt.Errorf(\"[CallerName]: %w\", err)"
+    - "Never return bare err"
+    - "Custom sentinels: &NotFoundError{EntityType: \"...\"}, ErrRead.Join(err)"
+    - "eventdealer.WorkflowError has TWO relevant fields: Error error, SkipRetry bool"
+    - "SkipRetry: true for non-retryable errors (parse failures, malformed input)"
+    - "SkipRetry omitted (defaults false) for retryable operational errors"
+
+  logging:
+    - "Logger is *valog.Logger stored as struct field (r.logger, s.logger)"
+    - "Debug enrichment: l := r.logger; if va_grpc.IsDebugEnabled(ctx) { l = &valog.Logger{Logger: l.With(zap.String(\"statement\", stmt))} }; l.Info(...)"
+    - "Always use structured zap fields: zap.String, zap.Any, zap.Error, zap.Int64s"
+
+  database:
+    - "Template execution: r.template.ExecuteTemplate(&b, \"template_name\", params)"
+    - "Named queries: r.db.NamedQueryContext(ctx, stmt, params)"
+    - "Named exec (writes): r.db.NamedExecContext(ctx, stmt, params)"
+    - "Context timeout before I/O: ctx, cancel := context.WithTimeout(ctx, 10*time.Second); defer cancel()"
+
+  pagination:
+    - "Use sqlfunc.Paging{Limit: pageSize, Offset: offset} — NOT page*pageSize math"
+    - "Caller passes offset int32 directly; ToXxxParams accepts it as a parameter"
+    - "Function signature: func ToXxxParams(l *valog.Logger, req *pb.XxxRequest, offset int32) (XxxParams, error)"
+
+  http_clients:
+    - "http.NewRequestWithContext(ctx, method, url, body)"
+    - "Auth: req.Header.Set(\"Authorization\", fmt.Sprintf(\"Bearer _%s\", masterKey))  ← underscore is mandatory"
+    - "io.ReadAll + json.Unmarshal; check status code before unmarshal"
+
+  retry:
+    - "Use plain time.Sleep(backoff) — NOT select{case <-time.After: case <-ctx.Done():}"
+    - "Context cancellation is checked at the TOP of the loop body, not inside sleep"
+
+  aws:
+    - "SDK v1 (github.com/aws/aws-sdk-go) — aws.String(), *ptr dereference on creds"
+    - "credentials.NewStaticCredentials(accessKey, secretKey, token)"
+    - "session.NewSession(&aws.Config{..., MaxRetries: aws.Int(5)})"
+
+  events:
+    - "Processor methods return eventdealer.WorkflowError (not error)"
+    - "Happy path: return eventdealer.WorkflowError{}"
+    - "Error path (retryable): return eventdealer.WorkflowError{Error: fmt.Errorf(\"...\")}"
+    - "Error path (non-retryable): return eventdealer.WorkflowError{Error: fmt.Errorf(\"...\"), SkipRetry: true}"
+    - "Default/unknown event: return eventdealer.WorkflowError{} (silent skip)"

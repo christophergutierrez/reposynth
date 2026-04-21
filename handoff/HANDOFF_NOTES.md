@@ -70,6 +70,12 @@ Three patterns yielded fewer records than requested (bearer: 7/20, retry: 6/20, 
 
 Concatenate holdout_v2 + holdout_v5 = 28 records for cycle 9 eval. Do NOT mix in holdout_v4 — not comparable to v2 baseline.
 
+### Cycle 9 — resolved / confirmed (2026-04-21)
+
+- **`cycle9_manifest.yaml` added to handoff/** — includes `tags` on all contrast patterns so `uncovered_conventions` is current. Contrast patterns add new tag coverage: `logging`, `pagination_defaults`, `retry_logic`.
+- **Records 1155–1160 flagged by trainLLM** — these are the intended `retry_logic_sleep_not_select` contrast pairs (wrong `select/time.After` idiom in `human` turn → correct `time.Sleep` in `gpt` turn). No change needed.
+- **Training config confirmed:** `combined_20260421_v5_clean.jsonl` (1204 records), `lora_rank: 16, lora_alpha: 32` unchanged. Only variable this cycle is training-data cleanliness.
+
 The manifest **must** be named `manifest.yaml` in `data/` — `emit_synth_status.py`
 reads `cfg.data_dir / "manifest.yaml"` explicitly. If it is absent or misnamed,
 `cycle` is emitted as `null` and `uncovered_conventions` is empty.
