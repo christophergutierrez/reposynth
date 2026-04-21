@@ -14,3 +14,6 @@ tmp/
 
 # Data files are never tracked (pass directly to training machine)
 *.jsonl
+
+# Eval manifests change every cycle — not tracked
+evals/*_manifest.yaml

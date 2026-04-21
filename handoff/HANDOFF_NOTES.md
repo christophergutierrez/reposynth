@@ -29,6 +29,23 @@ When placing files in the training machine's `data/` directory, use these names:
 | `data/holdout/holdout_v4.jsonl` | run separately if desired (harder set, not comparable to v2) |
 | `evals/cycle8_manifest.yaml` | `data/manifest.yaml` |
 
+### Cycle 9 holdout additions
+
+`holdout_v5.jsonl` — 8 new records targeting weak/uncovered conventions from cycle 8 synth_status:
+
+| id | function | conventions |
+|---|---|---|
+| holdout_v5_001 | ListExports | **logging** (IsDebugEnabled + valog.Logger enrichment), sqlx, context_timeout |
+| holdout_v5_002 | CreateShareAssociation | **named_exec_context_insert**, sql_template |
+| holdout_v5_003 | InsertExport | **named_exec_context_insert**, ErrRead.Join variant |
+| holdout_v5_004 | UpdateExport | **named_exec_context_insert**, ErrRead.Join, UPDATE variant |
+| holdout_v5_005 | GetExport | **grpc_status** (NotFound + InvalidArgument), parameter_conversion |
+| holdout_v5_006 | NewListExportsRequestFromServiceRequest | **parameter_conversion**, **pagination_defaults** (sqlfunc.Paging + page token) |
+| holdout_v5_007 | ProtoToEntityMethodology | **proto_conversion** (bidirectional enum) |
+| holdout_v5_008 | GetIdentity | **http_client** (Bearer _key), **json_unmarshal** |
+
+For cycle 9, use holdout_v2 + holdout_v5 together as `data/holdout.jsonl` (concatenate). Do NOT mix in holdout_v4 — it is not comparable to v2 baseline. holdout_v5 adds coverage for `logging` (previously uncovered) and provides more signal on the four low-scoring conventions.
+
 The manifest **must** be named `manifest.yaml` in `data/` — `emit_synth_status.py`
 reads `cfg.data_dir / "manifest.yaml"` explicitly. If it is absent or misnamed,
 `cycle` is emitted as `null` and `uncovered_conventions` is empty.
