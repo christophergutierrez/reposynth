@@ -10,6 +10,7 @@ pub struct Config {
     pub provider: ProviderConfig,
     pub conventions_dir: Option<String>,
     pub patterns_file: Option<String>,
+    pub contrast_file: Option<String>,
     pub output_dir: Option<String>,
     pub generate: Option<GenerateConfig>,
     pub health: Option<HashMap<String, HealthConfig>>,
@@ -56,6 +57,14 @@ impl Config {
         )
     }
 
+    pub fn contrast_file(&self) -> PathBuf {
+        PathBuf::from(
+            self.contrast_file
+                .as_deref()
+                .unwrap_or(".reposynth/patterns/contrast.yaml"),
+        )
+    }
+
     pub fn rules_per_file(&self) -> usize {
         self.generate.as_ref().and_then(|g| g.rules_per_file).unwrap_or(5)
     }
@@ -98,6 +107,7 @@ pub fn default_config(languages: Vec<String>) -> Config {
         },
         conventions_dir: Some(".claude/rules".to_string()),
         patterns_file: Some(".reposynth/patterns/go.yaml".to_string()),
+        contrast_file: None,
         output_dir: Some(".reposynth/data".to_string()),
         generate: Some(GenerateConfig {
             rules_per_file: Some(5),

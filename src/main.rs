@@ -48,8 +48,8 @@ enum Commands {
 
     /// Run the full data generation pipeline
     Generate {
-        /// Run only 'rules' or only 'booster' (default: both)
-        #[arg(long, value_parser = ["rules", "booster"])]
+        /// Run only 'rules', 'booster', or 'contrast' (default: all)
+        #[arg(long, value_parser = ["rules", "booster", "contrast"])]
         only: Option<String>,
 
         /// Resume an interrupted rules generation run
@@ -230,10 +230,12 @@ fn cmd_generate(
     let date = Local::now().format("%Y%m%d").to_string();
     let run_rules = only.map_or(true, |o| o == "rules");
     let run_booster = only.map_or(true, |o| o == "booster");
+    let run_contrast = only.map_or(true, |o| o == "contrast");
 
     // Temp files for intermediate steps
     let rules_raw = output_dir.join("rules_raw.jsonl");
     let booster_raw = output_dir.join("booster_raw.jsonl");
+    let contrast_raw = output_dir.join("contrast_raw.jsonl");
 
     // Step 1: Generate from rules
     if run_rules {
@@ -290,6 +292,20 @@ fn cmd_generate(
         }
     }
 
+    // Step 2b: Generate contrast examples (wrong → correct pairs)
+    if run_contrast {
+        println!("Generating contrast examples...");
+        let script_cfg = runner::build_script_config(
+            cfg,
+            &repo,
+            &contrast_raw,
+            false,
+            verbose,
+            None,
+        );
+        runner::run_script("contrast.py", &script_cfg)?;
+    }
+
     // Step 3: Process each file — strip meta, convert to ShareGPT, normalize
     let mut inputs_to_combine: Vec<PathBuf> = Vec::new();
 
@@ -318,6 +334,12 @@ fn cmd_generate(
         inputs_to_combine.push(final_processed);
     }
 
+    if run_contrast && contrast_raw.exists() {
+        println!("Processing contrast output...");
+        let processed = process_pipeline(&contrast_raw, &output_dir, "contrast", &cfg.languages)?;
+        inputs_to_combine.push(processed);
+    }
+
     if inputs_to_combine.is_empty() {
         bail!("No data generated — check errors above.");
     }
@@ -329,7 +351,7 @@ fn cmd_generate(
     println!("Combined {} records → {}", total, combined_path.display());
 
     // Clean up temp files
-    for raw in &[&rules_raw, &booster_raw] {
+    for raw in &[&rules_raw, &booster_raw, &contrast_raw] {
         if raw.exists() {
             let _ = std::fs::remove_file(raw);
         }

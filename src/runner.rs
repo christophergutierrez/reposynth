@@ -14,6 +14,7 @@ use crate::config::Config;
 const LLM_CLIENT_PY: &str = include_str!("../python/llm_client.py");
 const GENERATE_PY: &str = include_str!("../python/generate.py");
 const BOOSTER_PY: &str = include_str!("../python/booster.py");
+const CONTRAST_PY: &str = include_str!("../python/contrast.py");
 const HOLDOUT_PY: &str = include_str!("../python/holdout.py");
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ pub fn ensure_scripts_extracted() -> Result<PathBuf> {
         ("llm_client.py", LLM_CLIENT_PY),
         ("generate.py", GENERATE_PY),
         ("booster.py", BOOSTER_PY),
+        ("contrast.py", CONTRAST_PY),
         ("holdout.py", HOLDOUT_PY),
     ];
 
@@ -136,6 +138,10 @@ pub fn build_script_config(
     obj.insert(
         "patterns_file".into(),
         config.patterns_file().to_string_lossy().into(),
+    );
+    obj.insert(
+        "contrast_file".into(),
+        config.contrast_file().to_string_lossy().into(),
     );
 
     // Generate config
