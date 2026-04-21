@@ -216,6 +216,57 @@ fn normalize_go_body(body: &str) -> String {
     body.to_string()
 }
 
+/// Deduplicate JSONL records by assistant response content.
+/// Two records are considered duplicates if their normalized assistant/gpt
+/// turn content is identical. Returns (total_read, total_written).
+pub fn dedup(input: &Path, output: &Path) -> Result<(usize, usize)> {
+    use std::collections::HashSet;
+
+    let reader = open_reader(input)?;
+    let mut writer = open_writer(output)?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut total = 0;
+    let mut written = 0;
+
+    for line in reader.lines() {
+        let line = line.context("Failed to read line")?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        total += 1;
+        let record: Value = serde_json::from_str(line)
+            .with_context(|| format!("JSON parse error in {}", input.display()))?;
+        let key = extract_assistant_content(&record).unwrap_or_default();
+        if seen.insert(key) {
+            writer.write_all(line.as_bytes())?;
+            writer.write_all(b"\n")?;
+            written += 1;
+        }
+    }
+    Ok((total, written))
+}
+
+fn extract_assistant_content(record: &Value) -> Option<String> {
+    // ShareGPT format: conversations[{from: "gpt", value: ...}]
+    if let Some(convos) = record.get("conversations").and_then(|v| v.as_array()) {
+        for turn in convos {
+            if turn.get("from").and_then(|v| v.as_str()) == Some("gpt") {
+                return turn.get("value").and_then(|v| v.as_str()).map(|s| s.to_string());
+            }
+        }
+    }
+    // messages format fallback
+    if let Some(msgs) = record.get("messages").and_then(|v| v.as_array()) {
+        for msg in msgs {
+            if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+                return msg.get("content").and_then(|v| v.as_str()).map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Concatenate multiple JSONL files into one, returning total record count.
 pub fn combine_files(inputs: &[&Path], output: &Path) -> Result<usize> {
     let mut writer = open_writer(output)?;

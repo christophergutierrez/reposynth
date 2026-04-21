@@ -54,6 +54,7 @@ Rules for the assistant response:
 - NO postamble ("Key points:", "Note that...", "This approach...", etc.)
 - NO explanatory inline comments — only comments that would appear in production code
 - Must apply the same pattern shown in the reference (same library calls, same error handling)
+- The response must contain EXACTLY ONE function — the one that was requested. Do not append constructor functions, helper methods, test functions, usage examples, "What NOT to do" blocks, or any other code after the closing brace of the requested function.
 
 Return ONLY a valid JSON array — no preamble, no markdown fences:
 [

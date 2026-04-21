@@ -1,0 +1,90 @@
+# Written by reposynth (LLMx) after reviewing the large file from a full run.
+# Read by trainLLM (LLMy) before launching the next run.
+# LLMy reconciles these with canary findings before writing train_params.yaml.
+
+meta:
+  generated_at: "2026-04-19T03:15:00Z"
+  source_cycle: 6
+  source_artifact: "evals/2026-04-19_0246_videoamp"
+  priority: advisory          # advisory | strong | urgent
+
+# Reviewed signals:
+#   - LoRA lift is real: base 0.08 → LoRA 0.37 (+0.29 on the same holdout).
+#   - Format is learned: 20/20 responses start with `func`; 1/20 boilerplate case.
+#   - Sparse conventions (n=1–2 examples) dominate the POOR band — primarily a
+#     data-volume problem; routed to synth_status.yaml, not here.
+#   - Well-represented conventions still underperform: error_wrapping (n=20,
+#     avg 0.37), valog (n=12, avg 0.46), sqlx (n=9, avg 0.52). Shape is right,
+#     specific tokens are lost — consistent with a LoRA capacity ceiling.
+#
+# Therefore the only parameter change proposed is a rank bump to give the
+# adapter headroom on the conventions where data is adequate. Everything else
+# holds until the data gaps close.
+
+suggestions:
+  - param: lora_rank
+    current: 16
+    proposed: 32
+    rationale: >
+      Conventions with sufficient training volume (error_wrapping n=20 at 0.37,
+      valog n=12 at 0.46, sqlx n=9 at 0.52) still miss specific tokens while
+      getting structural shape right. That pattern reads as capacity-limited,
+      not data-limited. Doubling rank is the cheapest way to test that read
+      before any further architectural changes.
+
+  - param: lora_alpha
+    current: 32
+    proposed: 64
+    rationale: >
+      Maintain the existing 2:1 alpha:rank ratio when bumping rank to 32.
+      Changing the ratio alongside rank would confound the diagnostic.
+
+# Explicit holds — do not change, with reason, so LLMy knows these were
+# considered and declined rather than overlooked.
+holds:
+  - param: learning_rate
+    current: 2.0e-4
+    reason: >
+      No plateau or divergence signal in the logs that would justify a change.
+      Data gaps dominate the remaining error; adjusting LR now would muddy the
+      signal from the next data-enriched run.
+
+  - param: max_steps
+    current: 2000
+    reason: >
+      Adding steps on thin data invites overfitting on sparse conventions.
+      Revisit only after synth_status.yaml boosts land and n per convention
+      rises.
+
+  - param: warmup_steps
+    current: 50
+    reason: >
+      Loss curve is well-behaved through warmup; no evidence of instability.
+
+  - param: weight_decay
+    current: 0.01
+    reason: >
+      Holding constant while rank changes, so any regression can be attributed
+      to the rank bump alone.
+
+  - param: lora_dropout
+    current: 0
+    reason: >
+      Consider 0.05 only if excellent/good count stops growing after rank bump
+      *and* the dataset has been enriched. Premature regularization on thin
+      data will hurt more than help.
+
+# Broader directives that aren't single-parameter changes.
+notes:
+  - >
+    Priority is data, not parameters. The rank bump is a hedge against a
+    capacity ceiling on conventions that already have adequate coverage; it is
+    not a substitute for the boosts emitted in synth_status.yaml.
+  - >
+    If LLMy's canary on rank=32 shows a drop vs. rank=16 at equal data, revert
+    rank and report back via the next large file so LLMx can retract the
+    suggestion.
+  - >
+    Re-evaluate the full parameter set after the excellent/good count rises
+    above ~50% of holdout (currently 6/20 = 30%). Below that threshold, the
+    scoring signal is too noisy for confident parameter tuning.

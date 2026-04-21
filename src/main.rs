@@ -63,6 +63,10 @@ enum Commands {
         /// Enable verbose LLM logging
         #[arg(long)]
         verbose: bool,
+
+        /// Run the booster N times and deduplicate across passes (default: 1)
+        #[arg(long, default_value_t = 1)]
+        passes: u32,
     },
 
     /// Build a holdout eval set from real repo functions
@@ -217,6 +221,7 @@ fn cmd_generate(
     resume: bool,
     skip_check: bool,
     verbose: bool,
+    passes: u32,
 ) -> Result<()> {
     let repo = repo_root();
     let output_dir = repo.join(cfg.output_dir());
@@ -244,18 +249,45 @@ fn cmd_generate(
         runner::run_script("generate.py", &script_cfg)?;
     }
 
-    // Step 2: Generate booster examples
+    // Step 2: Generate booster examples (one or more passes)
     if run_booster {
-        println!("Generating booster examples...");
-        let script_cfg = runner::build_script_config(
-            cfg,
-            &repo,
-            &booster_raw,
-            false,
-            verbose,
-            None,
-        );
-        runner::run_script("booster.py", &script_cfg)?;
+        let total_passes = passes.max(1);
+        let mut pass_files: Vec<PathBuf> = Vec::new();
+
+        for pass in 1..=total_passes {
+            let pass_file = if total_passes == 1 {
+                booster_raw.clone()
+            } else {
+                output_dir.join(format!("booster_raw_pass{pass}.jsonl"))
+            };
+            if total_passes == 1 {
+                println!("Generating booster examples...");
+            } else {
+                println!("Generating booster examples (pass {pass}/{total_passes})...");
+            }
+            let script_cfg = runner::build_script_config(
+                cfg,
+                &repo,
+                &pass_file,
+                false,
+                verbose,
+                None,
+            );
+            runner::run_script("booster.py", &script_cfg)?;
+            if pass_file.exists() {
+                pass_files.push(pass_file);
+            }
+        }
+
+        // Concatenate pass files into booster_raw.jsonl when running multiple passes
+        if total_passes > 1 {
+            let pass_refs: Vec<&Path> = pass_files.iter().map(|p| p.as_path()).collect();
+            let combined_count = process::combine_files(&pass_refs, &booster_raw)?;
+            println!("Combined {total_passes} passes: {combined_count} raw examples");
+            for f in &pass_files {
+                let _ = std::fs::remove_file(f);
+            }
+        }
     }
 
     // Step 3: Process each file — strip meta, convert to ShareGPT, normalize
@@ -270,7 +302,20 @@ fn cmd_generate(
     if run_booster && booster_raw.exists() {
         println!("Processing booster output...");
         let processed = process_pipeline(&booster_raw, &output_dir, "booster", &cfg.languages)?;
-        inputs_to_combine.push(processed);
+
+        // Deduplicate across passes when more than one pass was run
+        let final_processed = if passes > 1 {
+            let deduped = output_dir.join("booster_raw_deduped_clean.jsonl");
+            let (total, kept) = process::dedup(&processed, &deduped)?;
+            let removed = total - kept;
+            println!("  [booster] dedup: {kept}/{total} kept ({removed} duplicates removed)");
+            let _ = std::fs::remove_file(&processed);
+            deduped
+        } else {
+            processed
+        };
+
+        inputs_to_combine.push(final_processed);
     }
 
     if inputs_to_combine.is_empty() {
@@ -409,11 +454,11 @@ fn main() -> Result<()> {
             cmd_init(&cli.config, force)?;
         }
 
-        Commands::Generate { only, resume, skip_check, verbose } => {
+        Commands::Generate { only, resume, skip_check, verbose, passes } => {
             let config_path = find_config(&cli.config)?;
             let cfg = load_config(&config_path)?;
             runner::check_python_deps()?;
-            cmd_generate(&cfg, only.as_deref(), resume, skip_check, verbose)?;
+            cmd_generate(&cfg, only.as_deref(), resume, skip_check, verbose, passes)?;
         }
 
         Commands::Holdout { candidates, output, verbose } => {

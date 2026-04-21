@@ -1,0 +1,75 @@
+meta:
+  generated_at: '2026-04-20T14:54:58Z'
+  eval_set: holdout
+  cycle: 7
+  action: GENERATE_DATA
+  source_eval: 2026-04-19_2239_my-adapter.json
+scores:
+  avg_similarity: 0.243
+  previous_avg: 0.26
+  base_model_avg: 0.068
+  excellent: 0
+  good: 1
+  partial: 0
+  poor: 9
+  total: 10
+boost_conventions:
+- name: error_wrapping
+  avg_score: 0.243
+  n_holdout_examples: 10
+  priority: critical
+- name: named_exec_context
+  avg_score: 0.121
+  n_holdout_examples: 1
+  priority: high
+- name: pagination
+  avg_score: 0.135
+  n_holdout_examples: 3
+  priority: high
+- name: proto_conversion
+  avg_score: 0.177
+  n_holdout_examples: 1
+  priority: high
+- name: sqlx
+  avg_score: 0.187
+  n_holdout_examples: 3
+  priority: high
+- name: context_timeout
+  avg_score: 0.202
+  n_holdout_examples: 2
+  priority: high
+- name: valog
+  avg_score: 0.209
+  n_holdout_examples: 3
+  priority: high
+- name: event_routing
+  avg_score: 0.225
+  n_holdout_examples: 3
+  priority: high
+- name: custom_error_type
+  avg_score: 0.283
+  n_holdout_examples: 1
+  priority: high
+- name: aws_sdk
+  avg_score: 0.315
+  n_holdout_examples: 1
+  priority: medium
+skip_conventions:
+- name: retry_logic
+  avg_score: 0.636
+  reason: GOOD
+uncovered_conventions:
+- name: batch_operation
+- name: context
+- name: grpc_status
+- name: http_client
+- name: json_unmarshal
+- name: logging
+- name: pagination_defaults
+- name: row_iteration
+- name: sql_template
+- name: sqlx_in
+format_health:
+  func_start_pct: 100.0
+  boilerplate_detected: 0
+  boilerplate_cases: []

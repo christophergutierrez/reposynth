@@ -185,7 +185,7 @@
 
 - name: sqlx_in_rebind_select_context
   description: "sqlx.In to expand a slice into an IN clause, db.Rebind to rewrite ? placeholders for Postgres, SelectContext to scan multiple rows into a slice"
-  n: 8
+  n: 20
   tags: [sqlx, valog, batch_operation, sqlx_in, error_wrapping]
   reference: |
     func (r *reportConfigurationRepository) BatchDeleteReport(ctx context.Context, reportIds []int64) ([]int64, error) {
@@ -246,7 +246,7 @@
 
 - name: http_client_with_context_request
   description: "http.NewRequestWithContext, setting Authorization and custom headers, http.Client.Do, io.ReadAll, status code check, json.Unmarshal, fmt.Errorf wrapping at each step"
-  n: 6
+  n: 15
   tags: [http_client, context, error_wrapping]
   reference: |
     func (c userInfoClient) GetIdentity(ctx context.Context, legacyUserId int64) (resp UserIdentity, err error) {
@@ -347,7 +347,7 @@
     req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 
 - name: retry_logic_http_backoff
-  description: "HTTP retry loop with exponential backoff (3 attempts), context.Done() check during sleep, retry only on 5xx, non-retryable errors returned immediately, fmt.Errorf wrapping, lastErr tracking"
+  description: "HTTP retry loop with exponential backoff (3 attempts), plain time.Sleep(backoff) between attempts — NOT select/channel, retry only on 5xx, non-retryable errors returned immediately, Bearer _%s master key auth (underscore before key), lastErr tracking, fmt.Errorf wrapping"
   n: 8
   tags: [http_client, retry_logic, context, error_wrapping]
   reference: |
@@ -357,19 +357,14 @@
     	var lastErr error
     	for attempt := 0; attempt < 3; attempt++ {
     		if attempt > 0 {
-    			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-    			select {
-    			case <-time.After(backoff):
-    			case <-ctx.Done():
-    				return nil, fmt.Errorf("[GetAccessGraph]: context canceled: %w", ctx.Err())
-    			}
+    			time.Sleep(time.Duration(1<<uint(attempt-1)) * time.Second)
     		}
 
     		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
     		if err != nil {
     			return nil, fmt.Errorf("[http.NewRequestWithContext]: %w", err)
     		}
-    		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+    		req.Header.Set("Authorization", fmt.Sprintf("Bearer _%s", c.masterKey))
 
     		resp, err := c.client.Do(req)
     		if err != nil {
@@ -398,6 +393,26 @@
     		return &result, nil
     	}
     	return nil, fmt.Errorf("[GetAccessGraph]: max retries exceeded: %w", lastErr)
+    }
+
+- name: retry_logic_for_loop_sleep
+  description: "Simple for-loop retry with plain time.Sleep(linear backoff) — NOT select/channel pattern; retry up to MaxRetries constant; return fmt.Errorf on exhaustion; no lastErr needed when the error check gates the sleep"
+  n: 15
+  tags: [retry_logic, error_wrapping]
+  reference: |
+    func (s *sqsService) DeleteFromQueue(ctx context.Context, queueUrl string, receiptHandle string) error {
+    	for i := 0; i < MaxDeleteRetries; i++ {
+    		_, err := s.sqsClient.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+    			QueueUrl:      &queueUrl,
+    			ReceiptHandle: &receiptHandle,
+    		})
+    		if err != nil {
+    			time.Sleep(time.Second * time.Duration(i+1))
+    		} else {
+    			return nil
+    		}
+    	}
+    	return fmt.Errorf("[svc.DeleteMessage]: exceeded maximum retry attempts")
     }
 
 - name: event_routing_switch
@@ -472,34 +487,39 @@
     }
 
 - name: aws_sdk_v1_sts_assume_role
-  description: "AWS SDK v1 (github.com/aws/aws-sdk-go — NOT v2) STS AssumeRole: AssumeRoleWithContext, aws.String/aws.StringValue helpers, structured Credentials return, fmt.Errorf wrapping"
-  n: 8
+  description: "AWS SDK v1 (github.com/aws/aws-sdk-go — NOT v2): sts.New(baseSess), AssumeRoleWithContext, credentials.NewStaticCredentials with *pointer dereference on creds fields, session.NewSession with MaxRetries: aws.Int(5), valog.Logger param with logger.Info before call, fmt.Errorf wrapping"
+  n: 15
   tags: [aws_sdk, context, error_wrapping]
   reference: |
-    func (c *stsClient) CreateSessionForArn(ctx context.Context, roleArn, sessionName string) (*Credentials, error) {
-    	input := &sts.AssumeRoleInput{
-    		RoleArn:         aws.String(roleArn),
-    		RoleSessionName: aws.String(sessionName),
-    	}
+    func CreateSessionForArn(ctx context.Context, baseSess *session.Session, arn string, region string, logger *valog.Logger) (*session.Session, error) {
+    	logger.Info("creating session for account", zap.String("arn", arn))
 
-    	result, err := c.stsClient.AssumeRoleWithContext(ctx, input)
+    	stsClient := sts.New(baseSess)
+    	assumedRoleResp, err := stsClient.AssumeRoleWithContext(ctx, &sts.AssumeRoleInput{
+    		RoleArn:         aws.String(arn),
+    		RoleSessionName: aws.String("tmp-videoamp-session"),
+    	})
     	if err != nil {
-    		return nil, fmt.Errorf("[sts.AssumeRole]: %w", err)
+    		return nil, fmt.Errorf("[AssumeRoleWithContext] error assuming role: %w", err)
     	}
 
-    	creds := result.Credentials
-    	return &Credentials{
-    		AccessKeyID:     aws.StringValue(creds.AccessKeyId),
-    		SecretAccessKey: aws.StringValue(creds.SecretAccessKey),
-    		SessionToken:    aws.StringValue(creds.SessionToken),
-    		Expiration:      aws.TimeValue(creds.Expiration),
-    	}, nil
+    	return session.NewSession(&aws.Config{
+    		Credentials: credentials.NewStaticCredentials(
+    			*assumedRoleResp.Credentials.AccessKeyId,
+    			*assumedRoleResp.Credentials.SecretAccessKey,
+    			*assumedRoleResp.Credentials.SessionToken,
+    		),
+    		Region:     aws.String(region),
+    		MaxRetries: aws.Int(5),
+    	})
     }
 
     // Note: import path is github.com/aws/aws-sdk-go/service/sts — NOT aws-sdk-go-v2
+    // credentials.NewStaticCredentials takes (accessKey, secretKey, token string)
+    // Use *ptr dereference on creds fields — they are *string in SDK v1
 
 - name: json_unmarshal_http_response
-  description: "HTTP GET with context, io.ReadAll on response body, json.Unmarshal into a typed struct, status code check before unmarshal, fmt.Errorf wrapping at every error site, defer resp.Body.Close()"
+  description: "HTTP GET with context, Bearer _%s master key auth header (underscore between Bearer and key), io.ReadAll on response body, json.Unmarshal into a typed struct, status code check before unmarshal, fmt.Errorf wrapping at every error site, defer resp.Body.Close()"
   n: 10
   tags: [http_client, json_unmarshal, error_wrapping]
   reference: |
@@ -510,7 +530,7 @@
     	if err != nil {
     		return false, fmt.Errorf("[http.NewRequestWithContext]: %w", err)
     	}
-    	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+    	req.Header.Set("Authorization", fmt.Sprintf("Bearer _%s", c.masterKey))
 
     	resp, err := c.httpClient.Do(req)
     	if err != nil {
@@ -705,7 +725,7 @@
     }
 
 - name: retry_logic_with_context_deadline
-  description: "HTTP retry loop: up to 3 attempts, exponential backoff using select with context.Done() to respect cancellation, retry only 5xx responses, non-retryable errors (4xx, parse errors) return immediately, lastErr pattern, fmt.Errorf wrapping"
+  description: "HTTP retry loop: up to 3 attempts, plain time.Sleep(backoff) between attempts — NOT select/channel, retry only 5xx responses, non-retryable errors (4xx, parse errors) return immediately, Bearer _%s master key auth, lastErr pattern, fmt.Errorf wrapping"
   n: 10
   tags: [http_client, retry_logic, context, error_wrapping]
   reference: |
@@ -715,19 +735,14 @@
     	var lastErr error
     	for attempt := 0; attempt < 3; attempt++ {
     		if attempt > 0 {
-    			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-    			select {
-    			case <-time.After(backoff):
-    			case <-ctx.Done():
-    				return nil, fmt.Errorf("[GetAccessGraph]: context canceled: %w", ctx.Err())
-    			}
+    			time.Sleep(time.Duration(1<<uint(attempt-1)) * time.Second)
     		}
 
     		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
     		if err != nil {
     			return nil, fmt.Errorf("[http.NewRequestWithContext]: %w", err)
     		}
-    		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+    		req.Header.Set("Authorization", fmt.Sprintf("Bearer _%s", c.masterKey))
 
     		resp, err := c.client.Do(req)
     		if err != nil {
@@ -756,7 +771,7 @@
     }
 
 - name: retry_logic_post_with_body
-  description: "HTTP POST retry loop with JSON request body (json.Marshal + bytes.NewReader), exponential backoff with context.Done() check, retry on 5xx, 429 too-many-requests, lastErr tracking, fmt.Errorf wrapping"
+  description: "HTTP POST retry loop with JSON request body (json.Marshal + bytes.NewReader), plain time.Sleep(backoff) — NOT select/channel, retry on 5xx or 429, lastErr tracking, Bearer _%s master key auth, fmt.Errorf wrapping"
   n: 8
   tags: [http_client, retry_logic, context, error_wrapping]
   reference: |
@@ -769,12 +784,7 @@
     	var lastErr error
     	for attempt := 0; attempt < 3; attempt++ {
     		if attempt > 0 {
-    			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-    			select {
-    			case <-time.After(backoff):
-    			case <-ctx.Done():
-    				return fmt.Errorf("[SendNotification]: context canceled: %w", ctx.Err())
-    			}
+    			time.Sleep(time.Duration(1<<uint(attempt-1)) * time.Second)
     		}
 
     		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
@@ -782,7 +792,7 @@
     			return fmt.Errorf("[http.NewRequestWithContext]: %w", err)
     		}
     		httpReq.Header.Set("Content-Type", "application/json")
-    		httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
+    		httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer _%s", c.masterKey))
 
     		resp, err := c.client.Do(httpReq)
     		if err != nil {
@@ -801,4 +811,240 @@
     		return nil
     	}
     	return fmt.Errorf("[SendNotification]: max retries exceeded: %w", lastErr)
+    }
+
+- name: named_exec_context_insert
+  description: "SQL template execution followed by NamedExecContext for INSERT or DELETE-without-return; discard result with _; logger.Info before exec; fmt.Errorf wrapping at ExecuteTemplate and NamedExecContext; nil error on success"
+  n: 12
+  tags: [sqlx, error_wrapping]
+  reference: |
+    func (r shareCacheRepository) CreateShare(ctx context.Context, param CreateShareParam) error {
+    	var b bytes.Buffer
+    	err := r.template.ExecuteTemplate(&b, "create_share", param)
+    	if err != nil {
+    		return fmt.Errorf(`[ExecuteTemplate]: %w`, err)
+    	}
+    	stmt := b.String()
+    	r.logger.Info("Creating resource share cache", zap.Any("param", param))
+    	_, err = r.db.NamedExecContext(ctx, stmt, param)
+    	if err != nil {
+    		return fmt.Errorf("[NamedExecContext]: %w", err)
+    	}
+    	return nil
+    }
+
+- name: named_exec_context_write_with_tx
+  description: "SQL template execution, NamedExecContext inside a transaction (MustBegin / defer Rollback / Commit), RowsAffected check returning &NotFoundError{EntityType} when zero rows affected, fmt.Errorf wrapping"
+  n: 10
+  tags: [sqlx, custom_error_type, error_wrapping]
+  reference: |
+    func (r *segmentRepository) DeleteInitiativeSegmentVersion(ctx context.Context, params DeleteInitiativeSegmentVersionParams) (err error) {
+    	var b bytes.Buffer
+    	templateName := "delete_segment_version_by_initiative"
+
+    	err = r.template.ExecuteTemplate(&b, templateName, params)
+    	if err != nil {
+    		return fmt.Errorf("[ExecuteTemplate]: %w", err)
+    	}
+
+    	stmt := strings.TrimSpace(b.String())
+
+    	tx := r.db.MustBegin()
+    	defer tx.Rollback()
+
+    	rows, err := tx.NamedExecContext(ctx, stmt, params)
+    	if err != nil {
+    		if err == sql.ErrNoRows {
+    			return &NotFoundError{EntityType: "SegmentVersion"}
+    		}
+    		return fmt.Errorf("[NamedExecContext]: %w", err)
+    	}
+    	if rows == nil {
+    		return &NotFoundError{EntityType: "SegmentVersion"}
+    	}
+    	if err := tx.Commit(); err != nil {
+    		return fmt.Errorf("[Commit]: %w", err)
+    	}
+    	rowsAffected, err := rows.RowsAffected()
+    	if err != nil {
+    		return fmt.Errorf("[res.RowsAffected]: %w", err)
+    	}
+    	if rowsAffected == 0 {
+    		return &NotFoundError{EntityType: "SegmentVersion"}
+    	}
+    	return nil
+    }
+
+- name: custom_error_not_found_sentinel
+  description: "&NotFoundError{EntityType: \"...\"} returned directly on sql.ErrNoRows — never wrapped with fmt.Errorf; entity type is a string like \"Report\", \"Export\", \"SegmentVersion\"; used in both GetContext and NamedQueryContext/NamedExecContext patterns"
+  n: 15
+  tags: [custom_error_type, sqlx, error_wrapping]
+  reference: |
+    func (repo *repo) GetReportById(ctx context.Context, reportId int64) (*models.Report, error) {
+    	report := models.Report{}
+    	sqlStatement := fmt.Sprintf("SELECT id, name, description FROM measurement.report WHERE id = %v;", reportId)
+    	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+    	defer cancel()
+    	if err := repo.db.GetContext(ctx, &report, sqlStatement); err != nil {
+    		if err == sql.ErrNoRows {
+    			return nil, &NotFoundError{EntityType: "Report"}
+    		}
+    		return nil, fmt.Errorf("[GetReportById]: %w", err)
+    	}
+    	return &report, nil
+    }
+
+- name: errread_join
+  description: "Service and repository methods propagating errors via ErrRead.Join(err) instead of fmt.Errorf; ErrRead is a package-level sentinel *errors.ErrorType; EVERY error site calls ErrRead.Join — including empty-result checks (len==0) and nil-row checks; never bare return err, never fmt.Errorf for read failures"
+  n: 20
+  tags: [error_wrapping]
+  reference: |
+    func (s *service) GetGenre(ctx context.Context, request *pb.GetGenreRequest) (*pb.Genre, error) {
+    	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+    	defer cancel()
+
+    	resp, err := s.repo.Get(ctx, request)
+    	if err != nil {
+    		return nil, ErrRead.Join(err)
+    	}
+    	result, err := resp.ToProto()
+    	if err != nil {
+    		return nil, ErrRead.Join(err)
+    	}
+    	return result, nil
+    }
+
+    func (r *repository) Get(ctx context.Context, request *pb.GetGenreRequest) (*entity.Genre, error) {
+    	var result entity.Genre
+    	query, args, err := r.templateMap.CreateQuery(r.db, templateModel, querybuilder.GetTmpl)
+    	if err != nil {
+    		return nil, ErrRead.Join(err)
+    	}
+    	if err = r.db.GetContext(ctx, &result, query, args...); err != nil {
+    		return nil, ErrRead.Join(err)
+    	}
+    	return &result, nil
+    }
+
+    // ErrRead.Join is used for empty results too — not just query failures:
+    func (f *forecastedReachCurvesRepository) GetReachCurves(ctx context.Context, datasourceUUID string, audienceScaling float64, audienceId, audienceLevel, startDs, endDs, viewershipTypeId int64) ([]*entity.ReachCurve, error) {
+    	maxRunId, err := f.reachCurveRepo.GetMaxRunId(ctx, params)
+    	if err != nil {
+    		return nil, ErrRead.Join(err)
+    	}
+
+    	reachCurves, err := f.reachCurveRepo.Get(ctx, params)
+    	if err != nil {
+    		return nil, ErrRead.Join(err)
+    	}
+
+    	if len(reachCurves) == 0 {
+    		return nil, ErrRead.Join(fmt.Errorf("reach curves not found in db"))
+    	}
+
+    	return reachCurves, nil
+    }
+
+- name: eventdealer_workflow_error
+  description: "Event processor function returning eventdealer.WorkflowError (NOT error); happy path returns WorkflowError{}; error paths return WorkflowError{Error: fmt.Errorf(...), SkipRetry: true}; non-fatal skips (heartbeat, unknown type) return WorkflowError{}; event routing via switch on event type string"
+  n: 12
+  tags: [event_routing, error_wrapping, valog]
+  reference: |
+    func (p UserOnboardingProcessor) ProcessAuth0Events(ctx context.Context, message string, log valog.Logger) eventdealer.WorkflowError {
+    	log.Info("running ProcessAuth0Events workflow", zap.String("message", message))
+    	event, err := ParseAuth0CloudEventMessage([]byte(message))
+    	if err != nil {
+    		log.Error("[ProcessAuth0Events.ParseAuth0CloudEventMessage]", zap.Error(err))
+    		return eventdealer.WorkflowError{Error: fmt.Errorf("[ProcessAuth0Events.ParseAuth0CloudEventMessage]: %w", err)}
+    	}
+
+    	if event.Type() == "auth0.heartbeat" {
+    		return eventdealer.WorkflowError{}
+    	}
+
+    	var payload map[string]any
+    	if err := json.Unmarshal(event.Data(), &payload); err != nil {
+    		return eventdealer.WorkflowError{Error: fmt.Errorf("[Unmarshal]: failed to unmarshal the 'data' field into map: %w", err)}
+    	}
+
+    	detail, ok := payload["detail"].(map[string]any)
+    	if !ok {
+    		return eventdealer.WorkflowError{Error: fmt.Errorf("[detail]: missing or invalid")}
+    	}
+
+    	data, ok := detail["data"].(map[string]any)
+    	if !ok {
+    		return eventdealer.WorkflowError{Error: fmt.Errorf("[data]: missing or invalid")}
+    	}
+
+    	switch event.Type() {
+    	case AUTH0_SYSTEM_API_OPERATION:
+    		return p.handleSystemAPIEvent(ctx, data, log)
+    	case AUTH0_USER_BLOCKED_MULTIPLE_FAILED_LOGINS:
+    		return p.handleUserBlockedEvent(ctx, data, log)
+    	default:
+    		log.Info("[ProcessAuth0Events] Unknown event type, skipping", zap.String("event_type", event.Type()))
+    		return eventdealer.WorkflowError{}
+    	}
+    }
+
+- name: valog_debug_conditional_full_function
+  description: "Complete repository function demonstrating the three-part valog debug pattern as an inseparable unit: (1) l := r.logger, (2) if va_grpc.IsDebugEnabled(ctx) { l = &valog.Logger{Logger: l.With(zap.String(\"statement\", stmt))} }, (3) l.Info(...) — all three parts must appear together in this exact order"
+  n: 15
+  tags: [sqlx, valog, context_timeout, error_wrapping]
+  reference: |
+    func (r *audienceExportRepository) GetEntityExportSetting(ctx context.Context, params GetExportSettingParams) (results models.EntityExportSetting, err error) {
+    	var b bytes.Buffer
+
+    	err = r.template.ExecuteTemplate(&b, "read_export_setting", params)
+    	if err != nil {
+    		return results, fmt.Errorf(`[ExecuteTemplate]: %w`, err)
+    	}
+
+    	stmt := b.String()
+
+    	l := r.logger
+    	if va_grpc.IsDebugEnabled(ctx) {
+    		l = &valog.Logger{
+    			Logger: l.With(
+    				zap.String("statement", stmt),
+    			),
+    		}
+    	}
+    	l.Info("GetEntityExportSetting sql statement",
+    		zap.Any("params", params),
+    		zap.String("template_name", "read_export_setting"),
+    	)
+
+    	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+    	defer cancel()
+
+    	var (
+    		res  models.EntityExportSetting
+    		rows *sqlx.Rows
+    	)
+    	if rows, err = r.db.NamedQueryContext(ctx, stmt, params); err != nil {
+    		if err == sql.ErrNoRows {
+    			return models.EntityExportSetting{}, nil
+    		}
+    		return results, fmt.Errorf(`[NamedQueryContext]: %w`, err)
+    	}
+
+    	if rows == nil {
+    		return results, fmt.Errorf(`[NamedQueryContext]: nil rows returned`)
+    	}
+
+    	if !rows.Next() {
+    		return results, nil
+    	}
+
+    	if err = rows.StructScan(&res); err != nil {
+    		return results, fmt.Errorf(`[StructScan]: %w`, err)
+    	}
+
+    	if rows.Next() {
+    		return results, fmt.Errorf(`[InternalError]: Multiple results found for this Entity`)
+    	}
+
+    	return res, nil
     }

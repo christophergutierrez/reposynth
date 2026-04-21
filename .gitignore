@@ -1,5 +1,16 @@
+# Build artifacts
 /target/
 Cargo.lock
-*.jsonl
-.reposynth/data/
+
+# Runtime config — generated per-repo, not part of the tool
 synth.yaml
+.reposynth/
+
+# All generated data — pass directly to training machine, not tracked
+data/
+
+# Temporary files received from training machine
+tmp/
+
+# Data files are never tracked (pass directly to training machine)
+*.jsonl

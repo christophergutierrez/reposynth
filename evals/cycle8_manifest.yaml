@@ -1,0 +1,265 @@
+# Cycle 8 — data manifest
+# Pass this file to the training machine alongside the training JSONL so the
+# LLM analysis step has full context for producing synth_status.yaml and the
+# next train_params_suggestions.yaml.
+
+meta:
+  cycle: 8
+  generated_at: "2026-04-20"
+  previous_cycle_eval: "2026-04-20_1002"   # eval report ID from cycle 7 (holdout_v2 run)
+  previous_avg_score: 0.41                 # holdout_v2 (20 records) — apples-to-apples basis
+  base_model_avg_score: 0.08
+
+training:
+  file: combined_20260420_v4.jsonl   # full cumulative dataset; send as data/training.jsonl
+  booster_only_file: combined_20260420_clean.jsonl   # new records only (1148); keep for reference
+  total_records: 3902   # 2754 (cycles 1–7, filtered) + 1148 (this cycle)
+  added_this_cycle: 1148
+  filtered_from_history: 75   # contaminated records removed from v3: wrong Bearer %s and select/time.After
+  generation:
+    passes: 3
+    raw_per_pass: [436, 435, 434]
+    raw_total: 1305
+    duplicates_removed: 157
+
+holdout:
+  # Recommend using holdout_v2 as the primary eval set for cycle 8 to maintain
+  # run-over-run comparability. holdout_v4 showed avg 0.24 vs holdout_v2's 0.41
+  # for the same cycle 7 adapter — the two holdouts are not comparable.
+  # Once a stable multi-cycle score is established, consider retiring holdout_v2
+  # in favour of a harder combined set.
+  eval_sets:
+    - holdout_v2.jsonl   # 20 records — primary; use for run-over-run comparison
+    - holdout_v4.jsonl   # 10 records — secondary; covers SkipRetry patterns and harder examples
+
+# ---------------------------------------------------------------------------
+# Pattern catalog — all 29 patterns, with record counts generated this cycle.
+# NOTE: Several high-priority patterns yielded significantly fewer examples
+# than requested (model saturation on long batches). The training machine
+# should NOT interpret these as data gaps fixed by adding more — the rationale
+# for high n values was to outweigh contaminated old records. If the
+# contaminated patterns still fail in cycle 8, consider filtering the old
+# wrong records rather than generating more new ones.
+# ---------------------------------------------------------------------------
+patterns:
+  - name: sqlx_named_query_template_single_row
+    n_this_cycle: 8
+    tags: [sqlx, valog, context_timeout, sql_template, error_wrapping]
+
+  - name: sqlx_named_query_template_delete_returning
+    n_this_cycle: 8
+    tags: [sqlx, valog, context_timeout, sql_template, error_wrapping, custom_error_type]
+
+  - name: sqlx_named_query_row_iteration
+    n_this_cycle: 8
+    tags: [sqlx, valog, row_iteration, sql_template, error_wrapping]
+
+  - name: sqlx_in_rebind_select_context
+    n_this_cycle: 19   # requested 20; model produced 19
+    tags: [sqlx, valog, batch_operation, sqlx_in, error_wrapping]
+
+  - name: valog_struct_field_conditional_enrichment
+    n_this_cycle: 14   # requested 15; model produced 14
+    tags: [valog, logging]
+
+  - name: http_client_with_context_request
+    n_this_cycle: 14   # requested 35; model produced 14 — see NOTE above
+    tags: [http_client, context, error_wrapping]
+    notes: "Bearer _%s (underscore) — contaminated pattern, n heavily boosted this cycle"
+
+  - name: fmt_errorf_wrapping_convention
+    n_this_cycle: 19   # requested 20; model produced 19
+    tags: [error_wrapping]
+
+  - name: grpc_status_not_found
+    n_this_cycle: 20
+    tags: [grpc_status, error_wrapping]
+
+  - name: context_timeout_cancel
+    n_this_cycle: 15
+    tags: [context_timeout]
+
+  - name: retry_logic_http_backoff
+    n_this_cycle: 10   # requested 35; model produced 10 — see NOTE above
+    tags: [http_client, retry_logic, context, error_wrapping]
+    notes: "Contaminated pattern; time.Sleep + Bearer _%s; n heavily boosted this cycle"
+
+  - name: retry_logic_for_loop_sleep
+    n_this_cycle: 15
+    tags: [retry_logic, error_wrapping]
+
+  - name: event_routing_switch
+    n_this_cycle: 15
+    tags: [event_routing, valog, error_wrapping]
+
+  - name: pagination_defaults_proto_to_params
+    n_this_cycle: 17   # requested 30; model produced 17
+    tags: [proto_conversion, pagination_defaults]
+    notes: >
+      FIXED this cycle: reference completely replaced. Old reference used
+      page*pageSize offset math. New reference uses sqlfunc.Paging{Limit, Offset}
+      with a direct offset int32 parameter (passed by caller, not calculated).
+      Function signature now includes valog.Logger and offset int32 params.
+
+  - name: parameter_conversion_proto_to_struct
+    n_this_cycle: 25
+    tags: [proto_conversion]
+    notes: "n bumped from 8 to 25 this cycle; proto_conversion 0.19 on holdout_v4"
+
+  - name: aws_sdk_v1_sts_assume_role
+    n_this_cycle: 5
+    tags: [aws_sdk, context, error_wrapping]
+    notes: "n reduced from 15 to 5 — scored EXCELLENT (0.80 on holdout_v2)"
+
+  - name: json_unmarshal_http_response
+    n_this_cycle: 16   # requested 30; model produced 16 — see NOTE above
+    tags: [http_client, json_unmarshal, error_wrapping]
+    notes: "Contaminated pattern (Bearer _%s); n heavily boosted this cycle"
+
+  - name: json_unmarshal_list_response
+    n_this_cycle: 13   # requested 25; model produced 13 — see NOTE above
+    tags: [http_client, json_unmarshal, error_wrapping]
+    notes: "Contaminated pattern (Bearer _%s); n heavily boosted this cycle"
+
+  - name: proto_conversion_domain_to_proto
+    n_this_cycle: 10
+    tags: [proto_conversion]
+
+  - name: proto_conversion_proto_to_domain
+    n_this_cycle: 10
+    tags: [proto_conversion]
+
+  - name: grpc_status_validation_and_errors
+    n_this_cycle: 20
+    tags: [grpc_status, error_wrapping, proto_conversion]
+
+  - name: grpc_status_get_with_not_found
+    n_this_cycle: 19   # requested 20; model produced 19
+    tags: [grpc_status, error_wrapping]
+
+  - name: retry_logic_with_context_deadline
+    n_this_cycle: 11   # requested 35; model produced 11 — see NOTE above
+    tags: [http_client, retry_logic, context, error_wrapping]
+    notes: "Contaminated pattern (select → sleep, Bearer _%s); n heavily boosted this cycle"
+
+  - name: retry_logic_post_with_body
+    n_this_cycle: 12   # requested 35; model produced 12 — see NOTE above
+    tags: [http_client, retry_logic, context, error_wrapping]
+    notes: "Contaminated pattern (select → sleep, Bearer _%s); n heavily boosted this cycle"
+
+  - name: named_exec_context_insert
+    n_this_cycle: 20
+    tags: [sqlx, error_wrapping]
+
+  - name: named_exec_context_write_with_tx
+    n_this_cycle: 15
+    tags: [sqlx, custom_error_type, error_wrapping]
+
+  - name: custom_error_not_found_sentinel
+    n_this_cycle: 20
+    tags: [custom_error_type, sqlx, error_wrapping]
+
+  - name: errread_join
+    n_this_cycle: 30
+    tags: [error_wrapping]
+
+  - name: eventdealer_workflow_error
+    n_this_cycle: 20
+    tags: [event_routing, error_wrapping, valog]
+    notes: >
+      FIXED this cycle: SkipRetry bool field added to training data.
+      Non-retryable error paths (parse failures, malformed input) now return
+      WorkflowError{Error: ..., SkipRetry: true}. Retryable operational errors
+      return WorkflowError{Error: ...} (no SkipRetry). Happy path / default case
+      returns WorkflowError{}.
+
+  - name: valog_debug_conditional_full_function
+    n_this_cycle: 11   # requested 15; model produced 11
+    tags: [sqlx, valog, context_timeout, error_wrapping]
+
+# ---------------------------------------------------------------------------
+# Fixes applied this cycle
+# ---------------------------------------------------------------------------
+fixes_applied:
+  - id: eventdealer_skiprotry
+    description: >
+      eventdealer_workflow_error reference updated to show two patterns:
+      (A) CDC processor with SkipRetry: true on parse errors (non-retryable);
+      (B) switch-routed processor with no SkipRetry (operational errors are
+      retryable). holdout_v4 records 001–003 use SkipRetry: true — the model
+      was scoring 0 on these because SkipRetry was absent from all prior training.
+
+  - id: pagination_proto_to_params_reference
+    description: >
+      pagination_defaults_proto_to_params reference completely replaced.
+      Old reference taught page*pageSize offset calculation — exactly the wrong
+      pattern the model was generating (score 0.08 on ToRequestParams holdout).
+      New reference uses sqlfunc.Paging{Limit, Offset} with a caller-supplied
+      offset int32 parameter. Function also accepts *valog.Logger as first param.
+
+  - id: contaminated_patterns_boosted
+    description: >
+      Five retry/HTTP patterns were heavily boosted to replace contaminated old
+      records. 75 contaminated records (wrong Bearer %s and select/time.After
+      retry) have been removed from the v3 historical data. The filtered baseline
+      (2754 records) plus 1148 new correct records gives a clean training set.
+
+# ---------------------------------------------------------------------------
+# Known remaining gaps
+# ---------------------------------------------------------------------------
+known_gaps:
+  - convention: named_exec_context_insert
+    holdout_examples: 0
+    note: >
+      Need a shorter holdout function (15–80 lines) to make this scoreable.
+
+# ---------------------------------------------------------------------------
+# Codebase conventions reference
+# ---------------------------------------------------------------------------
+codebase_conventions:
+  repo: "videoamp/central — VideoAmp Go monorepo"
+
+  error_handling:
+    - "Wrap every error: fmt.Errorf(\"[CallerName]: %w\", err)"
+    - "Never return bare err"
+    - "Custom sentinels: &NotFoundError{EntityType: \"...\"}, ErrRead.Join(err)"
+    - "eventdealer.WorkflowError has TWO relevant fields: Error error, SkipRetry bool"
+    - "SkipRetry: true for non-retryable errors (parse failures, malformed input)"
+    - "SkipRetry omitted (defaults false) for retryable operational errors"
+
+  logging:
+    - "Logger is *valog.Logger stored as struct field (r.logger, s.logger)"
+    - "Debug enrichment: l := r.logger; if va_grpc.IsDebugEnabled(ctx) { l = &valog.Logger{Logger: l.With(zap.String(\"statement\", stmt))} }; l.Info(...)"
+    - "Always use structured zap fields: zap.String, zap.Any, zap.Error, zap.Int64s"
+
+  database:
+    - "Template execution: r.template.ExecuteTemplate(&b, \"template_name\", params)"
+    - "Named queries: r.db.NamedQueryContext(ctx, stmt, params)"
+    - "Named exec (writes): r.db.NamedExecContext(ctx, stmt, params)"
+    - "Context timeout before I/O: ctx, cancel := context.WithTimeout(ctx, 10*time.Second); defer cancel()"
+
+  pagination:
+    - "Use sqlfunc.Paging{Limit: pageSize, Offset: offset} — NOT page*pageSize math"
+    - "Caller passes offset int32 directly; ToXxxParams accepts it as a parameter"
+    - "Function signature: func ToXxxParams(l *valog.Logger, req *pb.XxxRequest, offset int32) (XxxParams, error)"
+
+  http_clients:
+    - "http.NewRequestWithContext(ctx, method, url, body)"
+    - "Auth: req.Header.Set(\"Authorization\", fmt.Sprintf(\"Bearer _%s\", masterKey))  ← underscore is mandatory"
+    - "io.ReadAll + json.Unmarshal; check status code before unmarshal"
+
+  retry:
+    - "Use plain time.Sleep(backoff) — NOT select{case <-time.After: case <-ctx.Done():}"
+    - "Context cancellation is checked at the TOP of the loop body, not inside sleep"
+
+  aws:
+    - "SDK v1 (github.com/aws/aws-sdk-go) — aws.String(), *ptr dereference on creds"
+    - "credentials.NewStaticCredentials(accessKey, secretKey, token)"
+    - "session.NewSession(&aws.Config{..., MaxRetries: aws.Int(5)})"
+
+  events:
+    - "Processor methods return eventdealer.WorkflowError (not error)"
+    - "Happy path: return eventdealer.WorkflowError{}"
+    - "Error path (retryable): return eventdealer.WorkflowError{Error: fmt.Errorf(\"...\")}"
+    - "Error path (non-retryable): return eventdealer.WorkflowError{Error: fmt.Errorf(\"...\"), SkipRetry: true}"
+    - "Default/unknown event: return eventdealer.WorkflowError{} (silent skip)"
