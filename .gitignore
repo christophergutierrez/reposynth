@@ -1,6 +1,7 @@
 # Build artifacts
 /target/
 Cargo.lock
+.DS_Store
 
 # Runtime config — generated per-repo, not part of the tool
 synth.yaml
