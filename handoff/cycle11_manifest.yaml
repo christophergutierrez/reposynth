@@ -1,0 +1,176 @@
+# Cycle 11 — data manifest
+
+meta:
+  cycle: 11
+  generated_at: "2026-04-22"
+  previous_cycle_eval: "2026-04-21_2146"   # cycle 10 best-checkpoint (step 620)
+  previous_avg_score: 0.431                # combined holdout_v2+v5 (28 records)
+  base_model_avg_score: 0.073
+  max_steps: 640   # ~4 epochs on 1346 records (scaled from cycle 10: 1346/1315 × 620)
+
+training:
+  file: combined_20260422_v7_clean.jsonl
+  total_records: 1346   # 1148 (cycle 8 booster) + 198 (cycle 11 contrast)
+  booster_records: 1148   # unchanged — still the clean cycle-8 baseline
+  contrast_records: 198   # up from 167; health check PASS (first time)
+
+  contrast_note: >
+    Cycle 11 contrast set replaces cycle 10's 167-record set.
+    New entries address failure-mode-specific misses identified from the
+    cycle 10 eval report (2026-04-21_2146_my-adapter-ckpt620.md).
+
+  contrast_patterns:
+    # --- Original patterns (re-run) ---
+    - name: http_client_bearer_underscore
+      n_generated: 7
+      tags: [http_client, error_wrapping]
+    - name: retry_logic_sleep_not_select
+      n_generated: 6
+      tags: [http_client, retry_logic]
+    - name: pagination_paging_struct_not_offset_math
+      n_generated: 12
+      tags: [proto_conversion, pagination_defaults]
+    - name: error_wrapping_always_fmt_errorf
+      n_generated: 11
+      tags: [error_wrapping]
+    - name: errread_join_not_fmt_errorf
+      n_generated: 12
+      tags: [error_wrapping, sqlx]
+    - name: valog_debug_enrichment_not_plain_log
+      n_generated: 8
+      tags: [valog, logging]
+    - name: http_client_bearer_concat_not_sprintf
+      n_generated: 8
+      tags: [http_client, error_wrapping]
+    - name: retry_logic_sleep_not_per_attempt_timeout
+      n_generated: 6
+      tags: [http_client, retry_logic]
+    - name: valog_debug_wrong_wrapper_construction
+      n_generated: 8
+      tags: [valog, logging]
+    - name: grpc_status_errorf_not_fmt_errorf
+      n_generated: 17
+      tags: [grpc_status, error_wrapping]
+    - name: grpc_status_not_errors_new
+      n_generated: 13
+      tags: [grpc_status, error_wrapping]
+    - name: proto_conversion_use_getters_not_direct
+      n_generated: 15
+      tags: [proto_conversion]
+    - name: proto_conversion_enum_value_map_not_cast
+      n_generated: 15
+      tags: [proto_conversion]
+    - name: named_exec_context_update_not_query
+      n_generated: 15
+      tags: [sqlx, error_wrapping, named_exec_context_insert]
+    - name: named_exec_context_errsentinel_not_fmt_errorf
+      n_generated: 15
+      tags: [sqlx, error_wrapping, named_exec_context_insert]
+    # --- NEW: failure-mode-specific patterns from cycle 10 eval report ---
+    - name: named_exec_context_constant_not_template_boilerplate
+      n_generated: 18
+      tags: [sqlx, error_wrapping, named_exec_context_insert]
+      note: >
+        Seeded from holdout_v5_003/004 failure: adapter applied full
+        template+logger+timeout boilerplate to a 4-line query-constant function.
+        Wrong example is the adapter's actual output; correct is InsertExport/UpdateExport.
+    - name: proto_conversion_function_naming_direction
+      n_generated: 12
+      tags: [proto_conversion]
+      note: >
+        Seeded from holdout_v5_007 failure: adapter used ToProtoXxx/ToEntityXxx
+        naming (direction-reversed) and bare constants instead of entity.XxxConst.
+        Wrong example is the adapter's actual output.
+
+holdout:
+  eval_sets:
+    - holdout_v2.jsonl   # 20 records — primary; use for run-over-run comparison
+    - holdout_v5.jsonl   # 8 records — covers logging, named_exec_context_insert, grpc_status, proto_conversion
+    - holdout_v6.jsonl   # 2 records — NEW: retry_logic (DeleteFromQueue), batch_operation (BatchDeleteReport)
+  combined_records: 30
+  note: >
+    holdout_v6 adds 2 records to raise n from 1 to 2 for retry_logic and
+    batch_operation, so cycle 11 results on those conventions are less noisy.
+    context_deadline and logging remain n=1 — no suitable candidates found in the
+    codebase (context.WithDeadline not used; logging candidates either already in
+    holdout or use an older pattern without &valog.Logger{Logger: l.With(...)}).
+
+# ---------------------------------------------------------------------------
+# Cycle 10 failure analysis (why cycle 11 looks like this)
+# ---------------------------------------------------------------------------
+cycle10_failure_analysis:
+  named_exec_context_insert:
+    problem: >
+      29 contrast records (UPDATE + ErrSentinel variants) moved the 3-record average
+      0.01 (0.40 → 0.39). Eval report revealed the root cause: adapter applies full
+      template+logger+timeout boilerplate to query-constant functions. The previous
+      contrast taught NamedExecContext with templates — it never showed the constant-
+      query variant where NO template, NO logger, NO timeout is correct.
+    fix: "named_exec_context_constant_not_template_boilerplate (18 records, seeded from adapter output)"
+
+  proto_conversion:
+    problem: >
+      30 contrast records moved it +0.08 (0.14 → 0.22). Eval report showed adapter
+      generates ToProtoXxx/ToEntityXxx (wrong direction naming) and uses bare
+      unqualified constants instead of entity.XxxConst package constants.
+    fix: "proto_conversion_function_naming_direction (12 records, seeded from adapter output)"
+
+  grpc_status:
+    problem: >
+      30 contrast records moved it only +0.05 (0.09 → 0.14). Eval report showed
+      the adapter DOES use status.Errorf with correct codes — contrast worked.
+      The miss is VA-specific structural patterns (getRequestContext,
+      NewListExportsRequestFromServiceRequest) that are idiosyncratic to this codebase
+      and can't be taught by generic contrast pairs. Near a ceiling for what contrast
+      can fix on holdout_v5_005.
+    fix: "none — grpc_status miss is structural, not idiomatic"
+
+# ---------------------------------------------------------------------------
+# Skip / reduce
+# ---------------------------------------------------------------------------
+skip_or_reduce:
+  - name: aws_sdk
+    reason: "0.536 on holdout — low priority per synth_status"
+  - name: sql_template
+    reason: "0.687 on holdout — skip per synth_status"
+  - name: empty_result_handling
+    reason: "0.734 on holdout — skip per synth_status"
+
+# ---------------------------------------------------------------------------
+# Codebase conventions reference
+# ---------------------------------------------------------------------------
+codebase_conventions:
+  repo: "videoamp/central — VideoAmp Go monorepo"
+
+  error_handling:
+    - "Wrap every error: fmt.Errorf(\"[CallerName]: %w\", err)"
+    - "Never return bare err"
+    - "Custom sentinels: &NotFoundError{EntityType: \"...\"}, ErrRead.Join(err)"
+    - "Write layer: ErrInsertXxx.Join(err), ErrUpdateXxx.Join(err) — NOT fmt.Errorf"
+
+  logging:
+    - "l := r.logger; if va_grpc.IsDebugEnabled(ctx) { l = &valog.Logger{Logger: l.With(zap.String(\"statement\", stmt))} }; l.Info(...)"
+    - "l.With() returns *zap.Logger — MUST wrap: &valog.Logger{Logger: l.With(...)}"
+
+  database:
+    - "Template-based: ExecuteTemplate → stmt → NamedQueryContext/NamedExecContext(ctx, stmt, params)"
+    - "Constant-based: NamedExecContext(ctx, queryConst, params) — NO template, NO logger, NO timeout"
+    - "Context timeout (template pattern only): ctx, cancel := context.WithTimeout(ctx, 10*time.Second); defer cancel()"
+    - "Batch IN queries: sqlx.In(query, slice...) → db.Rebind(query) → SelectContext/QueryContext"
+
+  grpc:
+    - "Return status.Errorf(codes.InvalidArgument/NotFound/Internal, ...) — never fmt.Errorf"
+    - "Map sql.ErrNoRows → codes.NotFound"
+
+  proto_conversion:
+    - "Function naming: ProtoToEntityXxx(pb.Xxx) string, EntityToProtoXxx(string) pb.Xxx"
+    - "Use req.GetXxx() accessors — never direct field access"
+    - "Enum: pb.EnumType(pb.EnumType_value[s.Field]) domain→proto; .String() proto→domain"
+    - "Entity constants are package-qualified: entity.MethodologyXxx — never bare strings"
+
+  http_clients:
+    - "Auth: fmt.Sprintf(\"Bearer _%s\", masterKey) — underscore mandatory"
+
+  retry:
+    - "time.Sleep(backoff) — NOT select{case <-time.After: case <-ctx.Done():}"
+    - "NOT a fresh context.WithTimeout per attempt"

@@ -183,6 +183,38 @@ The three areas where reposynth needs the actual adapter outputs:
 
 **To unblock:** drop `2026-04-21_2146_my-adapter-ckpt620.md` into this `handoff/` directory.
 
+### Cycle 11 — resolved / confirmed (2026-04-22)
+
+- **`2026-04-21_2146_my-adapter-ckpt620.md` staged** — Reposynth is unblocked.
+- **Cycle 11 data generated.** All files ready in `handoff/`.
+
+### Cycle 11 files
+
+| reposynth file | trainLLM name | records | notes |
+|---|---|---|---|
+| `data/training/combined_20260422_v7_clean.jsonl` | `data/training.jsonl` | **1,346** | cycle 8 booster (1148) + cycle 11 contrast (198) |
+| `holdout_v2.jsonl` + `holdout_v5.jsonl` + `holdout_v6.jsonl` (concatenated) | `data/holdout.jsonl` | 30 | +2 new records from v6 |
+| `evals/cycle11_manifest.yaml` | `data/manifest.yaml` | — | `meta.max_steps: 640` |
+
+**`max_steps: 640`** — scaled from cycle 10's 620 at 1315 records: `1346/1315 × 620 ≈ 634`, rounded up.
+
+**Contrast: 198 records, 17 patterns** — health check PASS (first time ever). Two new patterns seeded directly from the cycle 10 eval report failures:
+
+| new pattern | seeded from | failure shape |
+|---|---|---|
+| `named_exec_context_constant_not_template_boilerplate` (18 records) | `holdout_v5_003/004` outputs | adapter applied full template+logger+timeout boilerplate to 4-line query-constant functions |
+| `proto_conversion_function_naming_direction` (12 records) | `holdout_v5_007` output | adapter used `ToProtoXxx`/`ToEntityXxx` (direction-reversed) + bare constants instead of `entity.XxxConst` |
+
+**Note on `grpc_status`:** the adapter already uses `status.Errorf` with correct codes — the miss on `holdout_v5_005` is structural (VA-specific `getRequestContext` + `NewListExportsRequestFromServiceRequest` pattern), not idiomatic. More contrast won't help; that record may be near a ceiling.
+
+**Holdout v6** (2 new records) — raises n for two n=1 conventions:
+- `holdout_v6_001`: `DeleteFromQueue` — `retry_logic` (time.Sleep linear backoff, SQS)
+- `holdout_v6_002`: `BatchDeleteReport` — `batch_operation` (sqlx.In + Rebind + SelectContext)
+
+**Holdout search findings for n=1 conventions:**
+- `context_deadline`: no candidates — codebase uses `context.WithTimeout` exclusively, never `WithDeadline`
+- `logging`: no new candidates — `ListExports` already in holdout_v5_001; other candidates use direct `logger.With()` assignment (wrong pattern, older codebase variant)
+
 ### Cycle 10 — trainLLM-side notes
 
 - **Best-checkpoint selection is now default in cycle.py.** It evaluates every saved checkpoint + `final/`, promotes the highest-scoring to `final/`. Opt out with `--no-best-checkpoint`.
