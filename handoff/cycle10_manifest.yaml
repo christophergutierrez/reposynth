@@ -1,0 +1,166 @@
+# Cycle 10 — data manifest
+# Pass this file to the training machine alongside the training JSONL so the
+# LLM analysis step has full context for producing synth_status.yaml and the
+# next train_params_suggestions.yaml.
+
+meta:
+  cycle: 10
+  generated_at: "2026-04-21"
+  previous_cycle_eval: "2026-04-21_1701"   # eval report ID from cycle 9 (step-800 adapter)
+  previous_avg_score: 0.376                # combined holdout_v2+v5 (28 records); best checkpoint was 0.44 on v2 alone
+  base_model_avg_score: 0.081
+  # IMPORTANT: Sweet spot for this dataset size was ~step 500 (3.3 epochs).
+  # Step 800 (5.3 epochs) overfit (loss 0.041) and dropped back to 0.41.
+  # Recommended training length for ~1300 records at effective batch 8:
+  max_steps: 620   # ~4 epochs on 1315 records; stop here, do not run to convergence
+
+training:
+  file: combined_20260421_v6_clean.jsonl
+  total_records: 1315   # 1148 (cycle 8 booster) + 167 (cycle 10 contrast)
+  booster_records: 1148   # unchanged from cycle 8 — still the clean baseline
+  contrast_records: 167   # replaces cycle 9's 56 contrast records
+
+  contrast_note: >
+    Cycle 10 contrast set replaces cycle 9's (56 records, 6 patterns).
+    New set: 167 records, 15 patterns.
+    Expanded coverage: grpc_status and proto_conversion now have dedicated contrast
+    entries. named_exec_context_insert has UPDATE and ErrSentinel variants.
+    Three patterns that underproduced in cycle 9 each have a second wrong_example
+    variant to broaden coverage.
+
+  contrast_patterns:
+    # --- Original 6 patterns (re-run with same seeds) ---
+    - name: http_client_bearer_underscore
+      n_generated: 7
+      tags: [http_client, error_wrapping]
+    - name: retry_logic_sleep_not_select
+      n_generated: 5
+      tags: [http_client, retry_logic]
+    - name: pagination_paging_struct_not_offset_math
+      n_generated: 12
+      tags: [proto_conversion, pagination_defaults]
+    - name: error_wrapping_always_fmt_errorf
+      n_generated: 12
+      tags: [error_wrapping]
+    - name: errread_join_not_fmt_errorf
+      n_generated: 12
+      tags: [error_wrapping, sqlx]
+    - name: valog_debug_enrichment_not_plain_log
+      n_generated: 8
+      tags: [valog, logging]
+    # --- New variant patterns for the 3 thin originals ---
+    - name: http_client_bearer_concat_not_sprintf
+      n_generated: 8
+      tags: [http_client, error_wrapping]
+    - name: retry_logic_sleep_not_per_attempt_timeout
+      n_generated: 6
+      tags: [http_client, retry_logic]
+    - name: valog_debug_wrong_wrapper_construction
+      n_generated: 8
+      tags: [valog, logging]
+    # --- New: grpc_status ---
+    - name: grpc_status_errorf_not_fmt_errorf
+      n_generated: 17
+      tags: [grpc_status, error_wrapping]
+    - name: grpc_status_not_errors_new
+      n_generated: 13
+      tags: [grpc_status, error_wrapping]
+    # --- New: proto_conversion ---
+    - name: proto_conversion_use_getters_not_direct
+      n_generated: 15
+      tags: [proto_conversion]
+    - name: proto_conversion_enum_value_map_not_cast
+      n_generated: 15
+      tags: [proto_conversion]
+    # --- New: named_exec_context_insert variants ---
+    - name: named_exec_context_update_not_query
+      n_generated: 14
+      tags: [sqlx, error_wrapping, named_exec_context_insert]
+    - name: named_exec_context_errsentinel_not_fmt_errorf
+      n_generated: 15
+      tags: [sqlx, error_wrapping, named_exec_context_insert]
+
+holdout:
+  eval_sets:
+    - holdout_v2.jsonl   # 20 records — primary; use for run-over-run comparison
+    - holdout_v5.jsonl   # 8 records — covers logging, named_exec_context_insert, grpc_status, proto_conversion
+  combined_records: 28
+  note: >
+    Same holdout as cycle 9 — no new records added. The v5 records cover exactly the
+    conventions that cycle 10 contrast targets, so they remain the right signal.
+
+# ---------------------------------------------------------------------------
+# Cycle 9 analysis (why cycle 10 looks like this)
+# ---------------------------------------------------------------------------
+cycle9_analysis:
+  best_score: 0.44   # holdout_v2 at checkpoint-500 (step 500, 3.3 epochs)
+  final_score: 0.41  # holdout_v2 at step-800 (overfit)
+  combined_score: 0.376  # holdout_v2+v5 combined (28 records)
+
+  root_cause_contrast_miss: >
+    56 contrast records weren't enough to move the needle on grpc_status (0.10) and
+    proto_conversion (0.14) — those conventions had no contrast coverage at all.
+    http_client and retry_logic each had 6-7 records, not enough to compete with
+    pretraining priors. Cycle 10 addresses this with 30 grpc_status records (2 patterns)
+    and 30 proto_conversion records (2 patterns), plus broader bearer/retry coverage.
+
+  overfitting_note: >
+    1204 records at effective batch 8 → sweet spot ~500 steps / 3.3 epochs.
+    Cycle 10 training file is 1315 records — scale max_steps proportionally to ~620.
+
+# ---------------------------------------------------------------------------
+# Skip / reduce these (already performing well)
+# ---------------------------------------------------------------------------
+skip_or_reduce:
+  - name: aws_sdk
+    reason: "0.675 on holdout — skip per synth_status"
+  - name: empty_result_handling
+    reason: "0.633 on holdout — skip per synth_status"
+
+# ---------------------------------------------------------------------------
+# Codebase conventions reference
+# ---------------------------------------------------------------------------
+codebase_conventions:
+  repo: "videoamp/central — VideoAmp Go monorepo"
+
+  error_handling:
+    - "Wrap every error: fmt.Errorf(\"[CallerName]: %w\", err)"
+    - "Never return bare err"
+    - "Custom sentinels: &NotFoundError{EntityType: \"...\"}, ErrRead.Join(err)"
+    - "eventdealer.WorkflowError has TWO relevant fields: Error error, SkipRetry bool"
+
+  logging:
+    - "Logger is *valog.Logger stored as struct field (r.logger, s.logger)"
+    - "Debug enrichment: l := r.logger; if va_grpc.IsDebugEnabled(ctx) { l = &valog.Logger{Logger: l.With(zap.String(\"statement\", stmt))} }; l.Info(...)"
+    - "l.With() returns *zap.Logger — MUST wrap in &valog.Logger{Logger: l.With(...)} to stay *valog.Logger"
+
+  database:
+    - "Template execution: r.template.ExecuteTemplate(&b, \"template_name\", params)"
+    - "Named queries (SELECT): r.db.NamedQueryContext(ctx, stmt, params)"
+    - "Named exec (INSERT/UPDATE/DELETE with no return): _, err = r.db.NamedExecContext(ctx, stmt, params)"
+    - "Context timeout before I/O: ctx, cancel := context.WithTimeout(ctx, 10*time.Second); defer cancel()"
+
+  grpc:
+    - "Return status.Errorf(codes.InvalidArgument, ...) for validation failures"
+    - "Map sql.ErrNoRows → status.Errorf(codes.NotFound, ...)"
+    - "All other repo errors → status.Errorf(codes.Internal, ...)"
+    - "NEVER return fmt.Errorf or errors.New from a gRPC handler"
+
+  proto_conversion:
+    - "Use req.GetXxx() accessor methods — NEVER direct field access (req.FieldName)"
+    - "Domain→proto enum: pb.EnumType(pb.EnumType_value[s.Field])"
+    - "Proto→domain enum: enumProtoValue.String()"
+    - "time.Time → proto: timestamppb.New(s.CreatedAt)"
+
+  pagination:
+    - "Use sqlfunc.Paging{Limit: pageSize, Offset: offset} — NOT page*pageSize math"
+    - "Caller passes offset int32 directly; function signature includes *valog.Logger and offset int32"
+
+  http_clients:
+    - "Auth: req.Header.Set(\"Authorization\", fmt.Sprintf(\"Bearer _%s\", masterKey))  ← underscore is mandatory"
+    - "NEVER: \"Bearer \"+key, \"Bearer %s\", or other auth schemes"
+
+  retry:
+    - "Use plain time.Sleep(backoff) — NOT select{case <-time.After: case <-ctx.Done():}"
+    - "NEVER create a fresh context.WithTimeout per retry attempt"
+    - "Context cancellation checked at the TOP of the loop body"
