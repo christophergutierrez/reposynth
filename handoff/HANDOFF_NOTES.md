@@ -124,6 +124,71 @@ Top cycle-10 asks, summarized:
 | `retry_logic_sleep_not_per_attempt_timeout` | retry_logic (2nd variant) | 6 |
 | `valog_debug_wrong_wrapper_construction` | logging (2nd variant) | 8 |
 
+### Cycle 10 — results (2026-04-22)
+
+**Cycle 10 moved the needle.** The contrast expansion landed: 0.38 → 0.43 on the 28-record holdout (+0.05), 6 Excellent vs cycle 9's 2. Fine-tuned vs base delta is **+0.36** (cycle 9 was +0.29).
+
+| Run | Combined (28) | E / G / P / Poor | vs base |
+|---|---|---|---|
+| Cycle 9 step-800 | 0.38 | 2 / 5 / 4 / 17 | +0.30 |
+| **Cycle 10 winner** (step 620) | **0.43** | **6 / 3 / 3 / 16** | **+0.36** |
+
+Training ran exactly as manifested (620 steps, 3.8 epochs on 1315 records, final loss 0.066). No overfit on the holdout. `meta.max_steps: 620` was well-calibrated — keep this approach.
+
+**Biggest wins** (all attributable to cycle-10 contrast expansion):
+- `holdout_v5_008` (http_client + json_unmarshal) 0.35 → **0.87**
+- `holdout_007` (retry_logic variant) 0.41 → **0.85**
+- `holdout_014` (error_wrapping) 0.22 → 0.55
+- `holdout_001` (sqlx, valog, context_timeout) 0.77 → 0.95
+
+**Still-weak conventions** (priority targets for cycle 11):
+
+| Convention | v10 avg | n | Notes |
+|---|---|---|---|
+| grpc_status | 0.14 | 3 | 30 contrast records moved it only +0.05. Contrast may miss the specific failure modes these records exercise. |
+| retry_logic | 0.19 | 1 | |
+| context_deadline | 0.19 | 1 | Not targeted this cycle. |
+| proto_conversion | 0.22 | 3 | 30 contrast records, +0.08 movement. Real but small. |
+| batch_operation | 0.28 | 1 | Not targeted. |
+| logging | 0.29 | 1 | |
+| named_exec_context_insert | 0.39 | 3 | 29 contrast records — **no measurable movement** (0.40 → 0.39). Worth inspecting. |
+
+**Full details and asks for cycle 11:** see `cycle10_feedback.md` in this directory. Machine-readable companion: `2026-04-21_2146_my-adapter-ckpt620_synth_status.yaml` (also in this directory).
+
+Top cycle-11 asks, summarized:
+
+1. Design contrast pairs *matched to actual failure shapes* on specific weak records (`holdout_v5_005` for grpc_status, `holdout_v5_007` for proto_conversion, and the three `named_exec_context_insert` records). Generic idiom-correction contrasts have hit diminishing returns; need failure-mode-specific ones.
+2. Re-examine why 29 `named_exec_context_insert` contrast records moved the needle 0.01. Investigate adapter outputs on those records vs. the contrast "correct" examples.
+3. Add holdout records for n=1 low-scoring conventions (`retry_logic`, `context_deadline`, `logging`, `batch_operation`) so we can separate noise from consistent misses.
+4. Keep the cycle-8-booster + contrast training strategy; annotate `meta.max_steps` again (scale ~4 epochs with record count).
+
+### Cycle 11 — reposynth requests (blocking)
+
+**Missing file: `2026-04-21_2146_my-adapter-ckpt620.md`** (cycle 10 eval report)
+
+This is the only thing blocking cycle 11 work. Without it reposynth must guess what the adapter is generating wrong on the specific failing records — which defeats the purpose of failure-mode-specific contrast design.
+
+The three areas where reposynth needs the actual adapter outputs:
+
+1. **`holdout_v5_005`** (`grpc_status`) — scored 0.14 after 30 contrast records. Need to see what the adapter generates to understand the specific failure shape (e.g. is it returning `fmt.Errorf` still? Wrong codes? Missing the `sql.ErrNoRows → codes.NotFound` mapping?).
+
+2. **`holdout_v5_007`** (`proto_conversion`) — scored 0.22 after 30 contrast records. Same: need the actual output to know whether the miss is enum conversion, accessor usage, `timestamppb.New`, or something else.
+
+3. **`holdout_v5_002`, `_003`, `_004`** (`named_exec_context_insert`) — 29 contrast records moved the 3-record average from 0.40 → 0.39. The contrast is clearly not covering whatever failure shape the adapter is anchoring on. Need to see what it's generating to design targeted wrong_examples.
+
+**What reposynth can do in parallel (no eval report needed):**
+
+- Add holdout records for the four n=1 low-scoring conventions (`retry_logic`, `context_deadline`, `logging`, `batch_operation`) — needs central repo search, already cleared to proceed.
+- Build cycle 11 manifest and clean training file once the new contrast patterns are ready.
+
+**To unblock:** drop `2026-04-21_2146_my-adapter-ckpt620.md` into this `handoff/` directory.
+
+### Cycle 10 — trainLLM-side notes
+
+- **Best-checkpoint selection is now default in cycle.py.** It evaluates every saved checkpoint + `final/`, promotes the highest-scoring to `final/`. Opt out with `--no-best-checkpoint`.
+- **`meta.max_steps` in the manifest is now authoritative.** If set, cycle.py uses it (overriding config). Fall-through order: `--steps` CLI > `--canary` > manifest > `--auto-steps` formula > config default.
+- **Byte-identical adapters at step 620.** `final/` (from train.py's `save_pretrained`) and `checkpoint-620/` (from HF Trainer's end-of-run save) are identical. They scored 0.42 and 0.43 on eval — pure vLLM sampling variance. Cycle-over-cycle deltas need to exceed ~0.02 to be meaningful against this noise floor. Considering pinning `temperature=0` in `eval.py` for deterministic scoring.
+
 The manifest **must** be named `manifest.yaml` in `data/` — `emit_synth_status.py`
 reads `cfg.data_dir / "manifest.yaml"` explicitly. If it is absent or misnamed,
 `cycle` is emitted as `null` and `uncovered_conventions` is empty.
