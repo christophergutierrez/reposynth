@@ -8,7 +8,9 @@ synth.yaml
 .reposynth/
 
 # All generated data — pass directly to training machine, not tracked
-data/
+data/holdout/*
+data/training/*
+handoff/
 
 # Temporary files received from training machine
 tmp/
